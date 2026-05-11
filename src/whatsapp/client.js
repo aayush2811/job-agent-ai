@@ -34,8 +34,7 @@ const client = new Client({
     defaultViewport: null,
 
     executablePath:
-      "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-
+    process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
     // Note: whatsapp-web.js also appends --disable-blink-features=AutomationControlled on launch.
     args: [
       "--no-sandbox",
