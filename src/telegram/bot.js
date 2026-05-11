@@ -27,7 +27,22 @@ bot.on("callback_query", async (query) => {
       job.applied = true;
 
       await job.save();
-
+      await bot.editMessageReplyMarkup(
+        {
+          inline_keyboard: [
+            [
+              {
+                text: "✅ APPROVED",
+                callback_data: "approved",
+              },
+            ],
+          ],
+        },
+        {
+          chat_id: query.message.chat.id,
+          message_id: query.message.message_id,
+        }
+      );
       await bot.sendMessage(chatId, `✅ Approved Application for ${job.role}`);
 
       console.log("✅ Job Approved");
@@ -35,6 +50,22 @@ bot.on("callback_query", async (query) => {
 
     // REJECT
     if (action === "reject") {
+      await bot.editMessageReplyMarkup(
+        {
+          inline_keyboard: [
+            [
+              {
+                text: "❌ REJECTED",
+                callback_data: "rejected",
+              },
+            ],
+          ],
+        },
+        {
+          chat_id: query.message.chat.id,
+          message_id: query.message.message_id,
+        }
+      );
       await bot.sendMessage(chatId, `❌ Rejected ${job.role}`);
 
       console.log("❌ Job Rejected");

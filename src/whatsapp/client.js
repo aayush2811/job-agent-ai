@@ -96,25 +96,22 @@ const startWhatsApp = () => {
       const existingJob = await Job.findOne({
         messageId: message.id._serialized,
       });
-      
+
       const extractedData = await extractJobData(text);
 
       console.log("✅ AI Extracted:");
       console.log(extractedData);
       const alreadyApplied = await Job.findOne({
         company: extractedData?.company,
-      
+
         role: extractedData?.role,
-      
+
         applied: true,
       });
-      
+
       if (alreadyApplied) {
-      
-        console.log(
-          "⚠️ Already Applied Previously"
-        );
-      
+        console.log("⚠️ Already Applied Previously");
+
         return;
       }
       if (existingJob) {
@@ -125,7 +122,11 @@ const startWhatsApp = () => {
       console.log("\n🤖 Sending To AI...\n");
 
       const matchScore = calculateMatchScore(extractedData);
+      if (matchScore < 60) {
+        console.log("⚠️ Low Match Score Ignored");
 
+        return;
+      }
       console.log(`🎯 Match Score: ${matchScore}%`);
       const newJob = await Job.create({
         messageId: message.id._serialized,

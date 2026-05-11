@@ -25,15 +25,25 @@ const extractWithRegex = (text) => {
   });
 
   const locationMatch = text.match(/Location:\s*(.*)/i);
-  const companyMatch = text.match(/Company:\s*(.*)/i);
-
-  const roleMatch = text.match(/Hiring\s+(.*?)(\n|$)/i);
-
+  const companyMatch =
+    text.match(/Company\s*:\s*(.+)/i) || text.match(/at\s+([A-Za-z0-9 .&-]+)/i);
+  const roleMatch =
+    text.match(/Hiring\s+(.+)/i) || text.match(/Position\s*:\s*(.+)/i);
   const experienceMatch = text.match(/Experience:\s*(.*)/i);
-  return {
-    company: companyMatch?.[1]?.trim() || "",
+  const cleanText = (value) => {
+    if (!value) return "";
 
-    role: roleMatch?.[1]?.trim() || "",
+    return value
+      .replace(/\n/g, "")
+      .replace(/\|/g, "")
+      .replace(/📍|🌟|🚀/g, "")
+      .trim();
+  };
+
+  return {
+    company: cleanText(companyMatch?.[1]),
+
+    role: cleanText(roleMatch?.[1]),
 
     location: locationMatch?.[1]?.trim() || "",
 

@@ -25,7 +25,7 @@ const syncOldMessages = async (client) => {
       console.log(`\n📂 Checking Group: ${chat.name}`);
 
       const messages = await chat.fetchMessages({
-        limit: 30,
+        limit: 10,
       });
 
       for (const message of messages) {
