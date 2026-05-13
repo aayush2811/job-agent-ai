@@ -34,13 +34,16 @@ const client = new Client({
     defaultViewport: null,
 
     executablePath:
-    process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+      process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
     // Note: whatsapp-web.js also appends --disable-blink-features=AutomationControlled on launch.
     args: [
       "--no-sandbox",
       "--disable-setuid-sandbox",
       "--disable-dev-shm-usage",
       "--disable-gpu",
+      "--single-process",
+      "--no-zygote",
+      "--disable-extensions",
     ],
   },
 
@@ -70,7 +73,9 @@ const startWhatsApp = () => {
 
   client.on("ready", () => {
     console.log("✅ WhatsApp Ready");
-    syncOldMessages(client);
+    setTimeout(() => {
+      syncOldMessages(client);
+    }, 10000);
   });
 
   client.on("auth_failure", (msg) => {
@@ -84,8 +89,11 @@ const startWhatsApp = () => {
   client.on("message_create", async (message) => {
     try {
       const text = message.body;
+      const messageId = message.id._serialized;
+
       console.log("\n📩 Message From:", message.from);
       console.log("👤 From Me:", message.fromMe);
+
       if (!text) return;
 
       const isJob = isJobRelated(text);
@@ -93,13 +101,48 @@ const startWhatsApp = () => {
       if (!isJob) return;
 
       const existingJob = await Job.findOne({
-        messageId: message.id._serialized,
+        messageId,
       });
+
+      if (existingJob) {
+        console.log("⚠️ Already Exists - Message Skipped");
+        return;
+      }
+
+      console.log("\n🤖 Extracting Job Data...\n");
 
       const extractedData = await extractJobData(text);
 
       console.log("✅ AI Extracted:");
       console.log(extractedData);
+
+      if (
+        !extractedData?.role ||
+        !extractedData?.email
+      ) {
+        console.log(
+          "⚠️ Extraction Failed - Missing Role Or Email"
+        );
+
+        return;
+      }
+
+      const duplicateJob = await Job.findOne({
+        company: extractedData?.company || "",
+        role: extractedData?.role || "",
+        email: extractedData?.email || "",
+      });
+
+      if (duplicateJob) {
+        console.log("⚠️ Duplicate Skipped:", {
+          company: extractedData?.company || "",
+          role: extractedData?.role || "",
+          email: extractedData?.email || "",
+        });
+
+        return;
+      }
+
       const alreadyApplied = await Job.findOne({
         company: extractedData?.company,
 
@@ -109,26 +152,22 @@ const startWhatsApp = () => {
       });
 
       if (alreadyApplied) {
-        console.log("⚠️ Already Applied Previously");
+        console.log("⚠️ Already Applied - Job Skipped");
 
         return;
       }
-      if (existingJob) {
-        console.log("⚠️ Already Exists");
-        return;
-      }
-
-      console.log("\n🤖 Sending To AI...\n");
 
       const matchScore = calculateMatchScore(extractedData);
       if (matchScore < 60) {
-        console.log("⚠️ Low Match Score Ignored");
+        console.log(`⚠️ Low Score Ignored: ${matchScore}%`);
 
         return;
       }
+
       console.log(`🎯 Match Score: ${matchScore}%`);
+
       const newJob = await Job.create({
-        messageId: message.id._serialized,
+        messageId,
         text,
 
         company: extractedData?.company || "",
@@ -145,8 +184,9 @@ const startWhatsApp = () => {
         matchScore,
       });
 
-      console.log("\n🔥 NEW JOB SAVED");
+      console.log("\n🔥 New Job Saved");
       console.log(newJob);
+
       await sendJobNotification(newJob);
     } catch (error) {
       console.log("❌ Message Error:", error.message);

@@ -21,12 +21,21 @@ bot.on("callback_query", async (query) => {
       return bot.sendMessage(chatId, "❌ Job Not Found");
     }
 
+    // Prevent multiple approvals
+    if (job.applied) {
+      return bot.answerCallbackQuery(query.id, {
+        text: "Already Applied ✅",
+      });
+    }
+
     // APPROVE
     if (action === "approve") {
       await sendJobApplicationEmail(job);
+
       job.applied = true;
 
       await job.save();
+
       await bot.editMessageReplyMarkup(
         {
           inline_keyboard: [
@@ -41,8 +50,9 @@ bot.on("callback_query", async (query) => {
         {
           chat_id: query.message.chat.id,
           message_id: query.message.message_id,
-        }
+        },
       );
+
       await bot.sendMessage(chatId, `✅ Approved Application for ${job.role}`);
 
       console.log("✅ Job Approved");
@@ -64,8 +74,9 @@ bot.on("callback_query", async (query) => {
         {
           chat_id: query.message.chat.id,
           message_id: query.message.message_id,
-        }
+        },
       );
+
       await bot.sendMessage(chatId, `❌ Rejected ${job.role}`);
 
       console.log("❌ Job Rejected");
