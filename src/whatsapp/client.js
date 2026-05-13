@@ -4,6 +4,7 @@ const calculateMatchScore = require("../jobs/matchScorer");
 const extractJobData = require("../ai/regexExtractor");
 const isJobRelated = require("../utils/jobFilter");
 const Job = require("../jobs/job.model");
+const autoApply = require("../jobs/autoApply");
 console.log("🚀 Starting WhatsApp Client...");
 const { sendJobNotification } = require("../telegram/bot");
 const syncOldMessages = require("./syncOldMessages");
@@ -33,8 +34,7 @@ const client = new Client({
     headless: puppeteerHeadless,
     defaultViewport: null,
 
-    executablePath:
-      process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
     // Note: whatsapp-web.js also appends --disable-blink-features=AutomationControlled on launch.
     args: [
       "--no-sandbox",
@@ -116,13 +116,8 @@ const startWhatsApp = () => {
       console.log("✅ AI Extracted:");
       console.log(extractedData);
 
-      if (
-        !extractedData?.role ||
-        !extractedData?.email
-      ) {
-        console.log(
-          "⚠️ Extraction Failed - Missing Role Or Email"
-        );
+      if (!extractedData?.role || !extractedData?.email) {
+        console.log("⚠️ Extraction Failed - Missing Role Or Email");
 
         return;
       }
@@ -158,13 +153,11 @@ const startWhatsApp = () => {
       }
 
       const matchScore = calculateMatchScore(extractedData);
-      if (matchScore < 60) {
+      if (matchScore < 70) {
         console.log(`⚠️ Low Score Ignored: ${matchScore}%`);
 
         return;
       }
-
-      console.log(`🎯 Match Score: ${matchScore}%`);
 
       const newJob = await Job.create({
         messageId,
@@ -186,6 +179,14 @@ const startWhatsApp = () => {
 
       console.log("\n🔥 New Job Saved");
       console.log(newJob);
+
+      if (matchScore >= 90) {
+        await autoApply(newJob);
+        return;
+      }
+
+      console.log("🟡 Manual Approval Required");
+      console.log(`🎯 Match Score: ${matchScore}%`);
 
       await sendJobNotification(newJob);
     } catch (error) {

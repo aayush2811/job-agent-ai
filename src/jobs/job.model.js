@@ -29,6 +29,15 @@ const jobSchema = new mongoose.Schema(
       default: false,
     },
 
+    emailSent: {
+      type: Boolean,
+      default: false,
+    },
+
+    appliedAt: {
+      type: Date,
+    },
+
     matchScore: {
       type: Number,
       default: 0,

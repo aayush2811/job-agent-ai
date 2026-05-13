@@ -6,6 +6,8 @@ const calculateMatchScore = require("../jobs/matchScorer");
 
 const isJobRelated = require("../utils/jobFilter");
 
+const autoApply = require("../jobs/autoApply");
+
 const {
   sendJobNotification,
 } = require("../telegram/bot");
@@ -41,10 +43,14 @@ const syncOldMessages = async (client) => {
           if (!isJob) continue;
 
           const existingJob = await Job.findOne({
-            messageId: message.id._serialized,
+            messageId:
+              message.id._serialized,
           });
 
           if (existingJob) {
+            console.log(
+              "⚠️ Old Message Already Exists - Skipped"
+            );
             continue;
           }
 
@@ -54,6 +60,45 @@ const syncOldMessages = async (client) => {
 
           const extractedData =
             await extractJobData(text);
+
+          if (
+            !extractedData?.role ||
+            !extractedData?.email
+          ) {
+            console.log(
+              "⚠️ Old Message Extraction Failed - Missing Role Or Email"
+            );
+
+            continue;
+          }
+
+          const duplicateJob =
+            await Job.findOne({
+              company:
+                extractedData?.company || "",
+
+              role:
+                extractedData?.role || "",
+
+              email:
+                extractedData?.email || "",
+            });
+
+          if (duplicateJob) {
+            console.log(
+              "⚠️ Old Duplicate Skipped:",
+              {
+                company:
+                  extractedData?.company || "",
+                role:
+                  extractedData?.role || "",
+                email:
+                  extractedData?.email || "",
+              }
+            );
+
+            continue;
+          }
 
           const alreadyApplied =
             await Job.findOne({
@@ -67,7 +112,7 @@ const syncOldMessages = async (client) => {
           if (alreadyApplied) {
 
             console.log(
-              "⚠️ Already Applied Previously"
+              "⚠️ Old Job Already Applied - Skipped"
             );
 
             continue;
@@ -75,6 +120,14 @@ const syncOldMessages = async (client) => {
 
           const matchScore =
             calculateMatchScore(extractedData);
+
+          if (matchScore < 70) {
+            console.log(
+              `⚠️ Old Low Score Ignored: ${matchScore}%`
+            );
+
+            continue;
+          }
 
           const newJob = await Job.create({
             messageId:
@@ -108,13 +161,18 @@ const syncOldMessages = async (client) => {
             newJob.role
           );
 
-          // Only notify strong matches
-          if (matchScore >= 70) {
-
-            await sendJobNotification(
-              newJob
-            );
+          if (matchScore >= 90) {
+            await autoApply(newJob);
+            continue;
           }
+
+          console.log(
+            "🟡 Old Job Manual Approval Required"
+          );
+
+          await sendJobNotification(
+            newJob
+          );
 
         } catch (error) {
 

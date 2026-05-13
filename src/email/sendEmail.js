@@ -67,6 +67,7 @@ const sendJobApplicationEmail = async (job) => {
     console.log("📧 Email Sent Successfully");
   } catch (error) {
     console.log("❌ Email Error:", error.message);
+    throw error;
   }
 };
 

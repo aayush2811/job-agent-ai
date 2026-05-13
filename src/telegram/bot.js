@@ -22,7 +22,7 @@ bot.on("callback_query", async (query) => {
     }
 
     // Prevent multiple approvals
-    if (job.applied) {
+    if (job.applied || job.emailSent) {
       return bot.answerCallbackQuery(query.id, {
         text: "Already Applied ✅",
       });
@@ -33,6 +33,8 @@ bot.on("callback_query", async (query) => {
       await sendJobApplicationEmail(job);
 
       job.applied = true;
+      job.emailSent = true;
+      job.appliedAt = new Date();
 
       await job.save();
 
@@ -127,7 +129,26 @@ const sendJobNotification = async (job) => {
   }
 };
 
+const sendAutoApplyNotification = async (job) => {
+  try {
+    const message = `
+🚀 Auto Applied Successfully
+
+🏢 Company: ${job.company}
+💼 Role: ${job.role}
+🎯 Match Score: ${job.matchScore}%
+`;
+
+    await bot.sendMessage(process.env.TELEGRAM_CHAT_ID, message);
+
+    console.log("📨 Auto Apply Telegram Notification Sent");
+  } catch (error) {
+    console.log("❌ Telegram Auto Apply Error:", error.message);
+  }
+};
+
 module.exports = {
   bot,
   sendJobNotification,
+  sendAutoApplyNotification,
 };
