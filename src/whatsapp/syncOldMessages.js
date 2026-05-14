@@ -11,6 +11,7 @@ const autoApply = require("../jobs/autoApply");
 const {
   sendJobNotification,
 } = require("../telegram/bot");
+const { sendErrorAlert } = require("../utils/errorNotifier");
 
 const syncOldMessages = async (client) => {
   try {
@@ -175,11 +176,11 @@ const syncOldMessages = async (client) => {
           );
 
         } catch (error) {
-
-          console.log(
-            "❌ Old Message Error:",
-            error.message
+          console.error(
+            "[Sync] old message processing error:",
+            error?.message || error
           );
+          await sendErrorAlert("Historical Sync — Message Processing", error);
         }
       }
     }
@@ -189,11 +190,8 @@ const syncOldMessages = async (client) => {
     );
 
   } catch (error) {
-
-    console.log(
-      "❌ Sync Error:",
-      error.message
-    );
+    console.error("[Sync] syncOldMessages failed:", error?.message || error);
+    await sendErrorAlert("Historical Sync Failed", error);
   }
 };
 

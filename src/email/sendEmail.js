@@ -1,4 +1,5 @@
 const nodemailer = require("nodemailer");
+const { sendErrorAlert } = require("../utils/errorNotifier");
 
 const sendJobApplicationEmail = async (job) => {
   try {
@@ -66,7 +67,8 @@ const sendJobApplicationEmail = async (job) => {
 
     console.log("📧 Email Sent Successfully");
   } catch (error) {
-    console.log("❌ Email Error:", error.message);
+    console.error("[Email] send failed:", error?.message || error);
+    await sendErrorAlert("Email Sending Failed", error);
     throw error;
   }
 };

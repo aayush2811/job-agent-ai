@@ -1,9 +1,16 @@
 const TelegramBot = require("node-telegram-bot-api");
 const sendJobApplicationEmail = require("../email/sendEmail");
+const { sendErrorAlert } = require("../utils/errorNotifier");
+
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, {
   polling: true,
 });
 const Job = require("../jobs/job.model");
+
+bot.on("polling_error", async (err) => {
+  console.error("[Telegram] polling_error:", err?.message || err);
+  await sendErrorAlert("Telegram Polling Error", err);
+});
 
 bot.on("callback_query", async (query) => {
   try {
@@ -30,7 +37,14 @@ bot.on("callback_query", async (query) => {
 
     // APPROVE
     if (action === "approve") {
-      await sendJobApplicationEmail(job);
+      try {
+        await sendJobApplicationEmail(job);
+      } catch {
+        await bot.answerCallbackQuery(query.id, {
+          text: "❌ Email failed — see alerts",
+        });
+        return;
+      }
 
       job.applied = true;
       job.emailSent = true;
@@ -52,7 +66,7 @@ bot.on("callback_query", async (query) => {
         {
           chat_id: query.message.chat.id,
           message_id: query.message.message_id,
-        },
+        }
       );
 
       await bot.sendMessage(chatId, `✅ Approved Application for ${job.role}`);
@@ -76,7 +90,7 @@ bot.on("callback_query", async (query) => {
         {
           chat_id: query.message.chat.id,
           message_id: query.message.message_id,
-        },
+        }
       );
 
       await bot.sendMessage(chatId, `❌ Rejected ${job.role}`);
@@ -86,7 +100,8 @@ bot.on("callback_query", async (query) => {
 
     await bot.answerCallbackQuery(query.id);
   } catch (error) {
-    console.log("❌ Callback Error:", error.message);
+    console.error("[Telegram] callback error:", error?.message || error);
+    await sendErrorAlert("Telegram Approval Callback", error);
   }
 });
 const sendJobNotification = async (job) => {
@@ -123,9 +138,10 @@ const sendJobNotification = async (job) => {
       },
     });
 
-    console.log("📨 Telegram Notification Sent");
+    console.log("[Telegram] job notification sent");
   } catch (error) {
-    console.log("❌ Telegram Error:", error.message);
+    console.error("[Telegram] job notification error:", error?.message || error);
+    await sendErrorAlert("Telegram Job Notification Failed", error);
   }
 };
 
@@ -141,9 +157,10 @@ const sendAutoApplyNotification = async (job) => {
 
     await bot.sendMessage(process.env.TELEGRAM_CHAT_ID, message);
 
-    console.log("📨 Auto Apply Telegram Notification Sent");
+    console.log("[Telegram] auto-apply notification sent");
   } catch (error) {
-    console.log("❌ Telegram Auto Apply Error:", error.message);
+    console.error("[Telegram] auto-apply notify error:", error?.message || error);
+    await sendErrorAlert("Telegram Auto-Apply Notification Failed", error);
   }
 };
 

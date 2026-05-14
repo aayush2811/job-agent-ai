@@ -5,9 +5,14 @@ const extractJobData = require("../ai/regexExtractor");
 const isJobRelated = require("../utils/jobFilter");
 const Job = require("../jobs/job.model");
 const autoApply = require("../jobs/autoApply");
+const { sendErrorAlert } = require("../utils/errorNotifier");
 console.log("🚀 Starting WhatsApp Client...");
 const { sendJobNotification } = require("../telegram/bot");
 const syncOldMessages = require("./syncOldMessages");
+
+let whatsappStatus = "disconnected";
+let hadConnectedOnce = false;
+
 // Remote/local cached HTML can be out of sync with your Chrome session and trigger an extra
 // navigation while `Client.inject()` runs → "Execution context was destroyed".
 // `none` loads live web.whatsapp.com (no interception); most stable for auth + inject.
@@ -50,13 +55,19 @@ const client = new Client({
   takeoverOnConflict: true,
   takeoverTimeoutMs: 0,
 });
+
+function getWhatsappStatus() {
+  return whatsappStatus;
+}
+
 const startWhatsApp = () => {
   client.on("change_state", (state) => {
-    console.log("🔄 STATE:", state);
+    console.log("[WhatsApp] state change:", state);
   });
 
   client.on("loading_screen", (percent, message) => {
-    console.log("Loading:", percent, message);
+    whatsappStatus = "loading";
+    console.log("[WhatsApp] loading:", percent, message);
   });
 
   client.on("qr", (qr) => {
@@ -72,18 +83,28 @@ const startWhatsApp = () => {
   });
 
   client.on("ready", () => {
-    console.log("✅ WhatsApp Ready");
+    whatsappStatus = "connected";
+    if (hadConnectedOnce) {
+      console.log("[WhatsApp] 🔄 reconnected — client ready again");
+    } else {
+      console.log("✅ WhatsApp Ready");
+    }
+    hadConnectedOnce = true;
     setTimeout(() => {
       syncOldMessages(client);
     }, 10000);
   });
 
   client.on("auth_failure", (msg) => {
+    whatsappStatus = "auth_failure";
     console.log("❌ Auth Failure:", msg);
+    sendErrorAlert("WhatsApp Auth Failure", msg);
   });
 
   client.on("disconnected", (reason) => {
+    whatsappStatus = "disconnected";
     console.log("❌ WhatsApp Disconnected:", reason);
+    sendErrorAlert("WhatsApp Disconnected", reason);
   });
 
   client.on("message_create", async (message) => {
@@ -190,11 +211,14 @@ const startWhatsApp = () => {
 
       await sendJobNotification(newJob);
     } catch (error) {
-      console.log("❌ Message Error:", error.message);
+      console.error("[WhatsApp] message processing error:", error?.message || error);
+      await sendErrorAlert("WhatsApp Message Processing", error);
     }
   });
 
   client.initialize();
 };
 
-module.exports = startWhatsApp;
+module.exports = Object.assign(startWhatsApp, {
+  getWhatsappStatus,
+});

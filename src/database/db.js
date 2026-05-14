@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { sendErrorAlert } = require("../utils/errorNotifier");
 
 const connectDB = async () => {
   try {
@@ -7,7 +8,9 @@ const connectDB = async () => {
     console.log("✅ MongoDB Connected");
   } catch (error) {
     console.log("❌ DB Error:", error.message);
-    process.exit(1);
+    sendErrorAlert("MongoDB Connection Failed", error)
+      .catch((e) => console.error("[DB] error alert failed:", e?.message || e))
+      .finally(() => process.exit(1));
   }
 };
 
