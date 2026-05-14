@@ -155,6 +155,7 @@ const syncOldMessages = async (client) => {
               extractedData?.experience || "",
 
             matchScore,
+            status: "pending",
           });
 
           console.log(

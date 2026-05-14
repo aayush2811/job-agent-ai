@@ -1,5 +1,13 @@
 const mongoose = require("mongoose");
 
+const JOB_STATUS = [
+  "pending",
+  "approved",
+  "auto_applied",
+  "rejected",
+  "failed",
+];
+
 const jobSchema = new mongoose.Schema(
   {
     messageId: {
@@ -17,7 +25,7 @@ const jobSchema = new mongoose.Schema(
     role: String,
 
     experience: String,
-    
+
     location: String,
 
     email: String,
@@ -43,6 +51,12 @@ const jobSchema = new mongoose.Schema(
       default: 0,
     },
 
+    status: {
+      type: String,
+      enum: JOB_STATUS,
+      default: "pending",
+    },
+
     source: {
       type: String,
       default: "WhatsApp",
@@ -53,4 +67,7 @@ const jobSchema = new mongoose.Schema(
   },
 );
 
-module.exports = mongoose.model("Job", jobSchema);
+const Job = mongoose.model("Job", jobSchema);
+Job.JOB_STATUS = JOB_STATUS;
+
+module.exports = Job;

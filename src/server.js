@@ -6,6 +6,8 @@ const mongoose = require("mongoose");
 const connectDB = require("./database/db");
 const startWhatsApp = require("./whatsapp/client");
 const { sendErrorAlert, sendStartupNotification } = require("./utils/errorNotifier");
+const jobService = require("./jobs/job.service");
+const jobRoutes = require("./jobs/job.routes");
 
 const app = express();
 
@@ -47,8 +49,12 @@ app.get("/", (req, res) => {
   res.send("🚀 Job Agent AI Running");
 });
 
+app.use("/api/jobs", jobRoutes);
+
 async function bootstrap() {
   await connectDB();
+
+  await jobService.migrateLegacyJobStatuses();
 
   startWhatsApp();
 

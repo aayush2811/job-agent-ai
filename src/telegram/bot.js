@@ -1,11 +1,10 @@
 const TelegramBot = require("node-telegram-bot-api");
-const sendJobApplicationEmail = require("../email/sendEmail");
 const { sendErrorAlert } = require("../utils/errorNotifier");
+const jobService = require("../jobs/job.service");
 
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, {
   polling: true,
 });
-const Job = require("../jobs/job.model");
 
 bot.on("polling_error", async (err) => {
   console.error("[Telegram] polling_error:", err?.message || err);
@@ -15,87 +14,97 @@ bot.on("polling_error", async (err) => {
 bot.on("callback_query", async (query) => {
   try {
     const data = query.data;
-
     const chatId = query.message.chat.id;
 
-    console.log("🛠 Callback Data:", data);
+    console.log("[Telegram] callback data:", data);
 
     const [action, jobId] = data.split("_");
 
-    const job = await Job.findById(jobId);
-
-    if (!job) {
-      return bot.sendMessage(chatId, "❌ Job Not Found");
-    }
-
-    // Prevent multiple approvals
-    if (job.applied || job.emailSent) {
-      return bot.answerCallbackQuery(query.id, {
-        text: "Already Applied ✅",
-      });
-    }
-
-    // APPROVE
     if (action === "approve") {
       try {
-        await sendJobApplicationEmail(job);
-      } catch {
-        await bot.answerCallbackQuery(query.id, {
-          text: "❌ Email failed — see alerts",
-        });
-        return;
-      }
+        const job = await jobService.approveJob(jobId);
 
-      job.applied = true;
-      job.emailSent = true;
-      job.appliedAt = new Date();
-
-      await job.save();
-
-      await bot.editMessageReplyMarkup(
-        {
-          inline_keyboard: [
-            [
-              {
-                text: "✅ APPROVED",
-                callback_data: "approved",
-              },
+        await bot.editMessageReplyMarkup(
+          {
+            inline_keyboard: [
+              [
+                {
+                  text: "✅ APPROVED",
+                  callback_data: "approved",
+                },
+              ],
             ],
-          ],
-        },
-        {
-          chat_id: query.message.chat.id,
-          message_id: query.message.message_id,
+          },
+          {
+            chat_id: query.message.chat.id,
+            message_id: query.message.message_id,
+          }
+        );
+
+        await bot.sendMessage(
+          chatId,
+          `✅ Approved Application for ${job.role}`
+        );
+        await bot.answerCallbackQuery(query.id);
+        console.log("[Telegram] job approved id=", jobId);
+      } catch (e) {
+        const code = e.statusCode;
+        if (code === 404) {
+          await bot.answerCallbackQuery(query.id, { text: "Job not found" });
+          return;
         }
-      );
-
-      await bot.sendMessage(chatId, `✅ Approved Application for ${job.role}`);
-
-      console.log("✅ Job Approved");
+        if (code === 409) {
+          await bot.answerCallbackQuery(query.id, { text: e.message });
+          return;
+        }
+        if (code === 502) {
+          await bot.answerCallbackQuery(query.id, {
+            text: "❌ Email failed — see alerts",
+          });
+          return;
+        }
+        throw e;
+      }
+      return;
     }
 
-    // REJECT
     if (action === "reject") {
-      await bot.editMessageReplyMarkup(
-        {
-          inline_keyboard: [
-            [
-              {
-                text: "❌ REJECTED",
-                callback_data: "rejected",
-              },
+      try {
+        const job = await jobService.rejectJob(jobId);
+
+        await bot.editMessageReplyMarkup(
+          {
+            inline_keyboard: [
+              [
+                {
+                  text: "❌ REJECTED",
+                  callback_data: "rejected",
+                },
+              ],
             ],
-          ],
-        },
-        {
-          chat_id: query.message.chat.id,
-          message_id: query.message.message_id,
+          },
+          {
+            chat_id: query.message.chat.id,
+            message_id: query.message.message_id,
+          }
+        );
+
+        await bot.sendMessage(chatId, `❌ Rejected ${job.role}`);
+        await bot.answerCallbackQuery(query.id);
+        console.log("[Telegram] job rejected id=", jobId);
+      } catch (e) {
+        const code = e.statusCode;
+        if (code === 404) {
+          await bot.answerCallbackQuery(query.id, { text: "Job not found" });
+          return;
         }
-      );
-
-      await bot.sendMessage(chatId, `❌ Rejected ${job.role}`);
-
-      console.log("❌ Job Rejected");
+        if (code === 409) {
+          await bot.answerCallbackQuery(query.id, { text: e.message });
+          return;
+        }
+        throw e;
+      }
+      return;
     }
 
     await bot.answerCallbackQuery(query.id);
@@ -104,6 +113,7 @@ bot.on("callback_query", async (query) => {
     await sendErrorAlert("Telegram Approval Callback", error);
   }
 });
+
 const sendJobNotification = async (job) => {
   try {
     const message = `

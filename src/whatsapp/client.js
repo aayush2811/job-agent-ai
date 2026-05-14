@@ -196,6 +196,7 @@ const startWhatsApp = () => {
 
         experience: extractedData?.experience || "",
         matchScore,
+        status: "pending",
       });
 
       console.log("\n🔥 New Job Saved");

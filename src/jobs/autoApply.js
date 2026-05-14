@@ -21,6 +21,7 @@ async function autoApply(job) {
     job.applied = true;
     job.emailSent = true;
     job.appliedAt = new Date();
+    job.status = "auto_applied";
 
     await job.save();
     await sendAutoApplyNotification(job);
@@ -31,6 +32,15 @@ async function autoApply(job) {
       `[AutoApply] post-email step failed company=${job?.company} role=${job?.role}:`,
       error?.message || error
     );
+    try {
+      job.status = "failed";
+      await job.save();
+    } catch (saveErr) {
+      console.error(
+        "[AutoApply] could not persist failed status:",
+        saveErr?.message || saveErr
+      );
+    }
     await sendErrorAlert("Auto Apply Failed", error);
   }
 }
