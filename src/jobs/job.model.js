@@ -51,6 +51,17 @@ const jobSchema = new mongoose.Schema(
       default: 0,
     },
 
+    scoreBreakdown: mongoose.Schema.Types.Mixed,
+
+    scoreRecommendation: String,
+
+    scoringReasoning: [String],
+
+    approvalTimedOut: {
+      type: Boolean,
+      default: false,
+    },
+
     status: {
       type: String,
       enum: JOB_STATUS,

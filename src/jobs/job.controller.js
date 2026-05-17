@@ -4,22 +4,17 @@ function sendError(res, statusCode, message) {
   res.status(statusCode).json({
     success: false,
     message,
+    data: null,
   });
 }
 
 async function getJobs(req, res) {
-  try {
-    const data = await jobService.getJobs(req.query);
-    res.json({
-      success: true,
-      message: "Jobs fetched",
-      data,
-    });
-  } catch (err) {
-    const code = err.statusCode || 500;
-    console.error("[API] GET /jobs:", err.message);
-    sendError(res, code, err.message || "Failed to list jobs");
-  }
+  const data = await jobService.getJobs(req.query);
+  res.json({
+    success: true,
+    message: "Jobs fetched",
+    data,
+  });
 }
 
 async function getJobById(req, res) {
@@ -32,7 +27,6 @@ async function getJobById(req, res) {
     });
   } catch (err) {
     const code = err.statusCode || 500;
-    console.error("[API] GET /jobs/:id:", err.message);
     sendError(res, code, err.message || "Failed to fetch job");
   }
 }
@@ -47,7 +41,6 @@ async function approveJob(req, res) {
     });
   } catch (err) {
     const code = err.statusCode || 500;
-    console.error("[API] PATCH /jobs/:id/approve:", err.message);
     sendError(res, code, err.message || "Failed to approve job");
   }
 }
@@ -62,7 +55,6 @@ async function rejectJob(req, res) {
     });
   } catch (err) {
     const code = err.statusCode || 500;
-    console.error("[API] PATCH /jobs/:id/reject:", err.message);
     sendError(res, code, err.message || "Failed to reject job");
   }
 }
@@ -77,24 +69,24 @@ async function deleteJob(req, res) {
     });
   } catch (err) {
     const code = err.statusCode || 500;
-    console.error("[API] DELETE /jobs/:id:", err.message);
     sendError(res, code, err.message || "Failed to delete job");
   }
 }
 
 async function getJobStats(req, res) {
-  try {
-    const stats = await jobService.getJobStats();
-    res.json({
-      success: true,
-      message: "Job stats fetched",
-      data: stats,
-    });
-  } catch (err) {
-    const code = err.statusCode || 500;
-    console.error("[API] GET /jobs/stats:", err.message);
-    sendError(res, code, err.message || "Failed to fetch job stats");
-  }
+  const stats = await jobService.getJobStats();
+  res.json({
+    success: true,
+    message: "Job stats fetched",
+    data: {
+      total: stats.total ?? stats.totalJobs ?? 0,
+      approved: stats.approved ?? 0,
+      pending: stats.pending ?? 0,
+      rejected: stats.rejected ?? 0,
+      autoApplied: stats.autoApplied ?? 0,
+      failed: stats.failed ?? 0,
+    },
+  });
 }
 
 module.exports = {

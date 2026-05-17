@@ -1,13 +1,14 @@
 const express = require("express");
 const jobController = require("./job.controller");
+const asyncHandler = require("../middleware/asyncHandler");
 
 const router = express.Router();
 
-router.get("/stats", jobController.getJobStats);
-router.get("/", jobController.getJobs);
-router.get("/:id", jobController.getJobById);
-router.patch("/:id/approve", jobController.approveJob);
-router.patch("/:id/reject", jobController.rejectJob);
-router.delete("/:id", jobController.deleteJob);
+router.get("/stats", asyncHandler(jobController.getJobStats));
+router.get("/", asyncHandler(jobController.getJobs));
+router.get("/:id", asyncHandler(jobController.getJobById));
+router.patch("/:id/approve", asyncHandler(jobController.approveJob));
+router.patch("/:id/reject", asyncHandler(jobController.rejectJob));
+router.delete("/:id", asyncHandler(jobController.deleteJob));
 
 module.exports = router;

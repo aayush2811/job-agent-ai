@@ -1,6 +1,26 @@
 const mongoose = require("mongoose");
 const Job = require("./job.model");
-const sendJobApplicationEmail = require("../email/sendEmail");
+const { isDbReady } = require("../utils/dbGuard");
+const approvalQueue = require("../services/approvalQueue.service");
+const applicationEngine = require("../services/applicationEngine.service");
+const { emitPipeline } = require("../services/pipelineBus");
+const { logActivity } = require("../services/activityLog.service");
+const Application = require("../models/application.model");
+
+const EMPTY_JOB_STATS = {
+  total: 0,
+  totalJobs: 0,
+  pending: 0,
+  approved: 0,
+  autoApplied: 0,
+  rejected: 0,
+  failed: 0,
+};
+
+const EMPTY_JOBS_LIST = {
+  jobs: [],
+  pagination: { page: 1, limit: 10, total: 0, totalPages: 0 },
+};
 
 const VALID_STATUSES = new Set(Job.JOB_STATUS || []);
 
@@ -96,6 +116,21 @@ async function migrateLegacyJobStatuses() {
 }
 
 async function getJobs(query) {
+  if (!isDbReady()) {
+    return {
+      ...EMPTY_JOBS_LIST,
+      pagination: {
+        page: Math.max(1, parseInt(String(query?.page || DEFAULT_PAGE), 10) || 1),
+        limit: Math.min(
+          MAX_LIMIT,
+          Math.max(1, parseInt(String(query?.limit || DEFAULT_LIMIT), 10) || DEFAULT_LIMIT)
+        ),
+        total: 0,
+        totalPages: 0,
+      },
+    };
+  }
+
   const page = Math.max(1, parseInt(String(query.page || DEFAULT_PAGE), 10) || 1);
   const limitRaw =
     parseInt(String(query.limit || DEFAULT_LIMIT), 10) || DEFAULT_LIMIT;
@@ -122,31 +157,42 @@ async function getJobs(query) {
 
   const sort = parseSort(query.sort);
 
-  const [total, jobs] = await Promise.all([
-    Job.countDocuments(filter),
-    Job.find(filter)
-      .sort(sort)
-      .skip(skip)
-      .limit(limit)
-      .select("-text")
-      .lean()
-      .exec(),
-  ]);
+  try {
+    const [total, jobs] = await Promise.all([
+      Job.countDocuments(filter),
+      Job.find(filter)
+        .sort(sort)
+        .skip(skip)
+        .limit(limit)
+        .select("-text")
+        .lean()
+        .exec(),
+    ]);
 
-  const totalPages = Math.max(1, Math.ceil(total / limit));
+    const totalPages = Math.max(1, Math.ceil(total / limit) || 1);
 
-  return {
-    jobs,
-    pagination: {
-      page,
-      limit,
-      total,
-      totalPages,
-    },
-  };
+    return {
+      jobs,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages,
+      },
+    };
+  } catch (err) {
+    console.error("[Jobs] getJobs failed:", err?.message || err);
+    return {
+      ...EMPTY_JOBS_LIST,
+      pagination: { page, limit, total: 0, totalPages: 0 },
+    };
+  }
 }
 
 async function getJobById(id) {
+  if (!isDbReady()) {
+    throw httpError(503, "Database unavailable");
+  }
   assertValidObjectId(id);
   const job = await Job.findById(id).lean().exec();
   if (!job) {
@@ -155,7 +201,7 @@ async function getJobById(id) {
   return job;
 }
 
-async function approveJob(id) {
+async function approveJob(id, options = {}) {
   assertValidObjectId(id);
   const job = await Job.findById(id).exec();
   if (!job) {
@@ -170,19 +216,39 @@ async function approveJob(id) {
     throw httpError(409, "Cannot approve a rejected job");
   }
 
-  try {
-    await sendJobApplicationEmail(job);
-  } catch {
-    throw httpError(502, "Failed to send application email");
+  approvalQueue.clear(String(id));
+
+  const source =
+    options.channel === "telegram" ? "manual_telegram" : "manual_api";
+
+  const result =
+    source === "manual_telegram"
+      ? await applicationEngine.applyFromApproval(job)
+      : await applicationEngine.applyFromApi(job);
+
+  if (!result?.ok) {
+    throw httpError(502, "Failed to send application email after retries");
   }
 
-  job.applied = true;
-  job.emailSent = true;
-  job.appliedAt = new Date();
-  job.status = "approved";
-
-  await job.save();
   const lean = await Job.findById(job._id).select("-text").lean().exec();
+
+  emitPipeline("approval-resolved", {
+    jobId: String(id),
+    action: "approved",
+    source,
+  });
+  emitPipeline("dashboard-update", {
+    reason: "approval-approved",
+    jobId: String(id),
+  });
+
+  await logActivity({
+    type: "job_approved",
+    message: `Job approved (${source}): ${lean.role}`,
+    jobId: job._id,
+    meta: { source },
+  });
+
   return lean;
 }
 
@@ -201,9 +267,35 @@ async function rejectJob(id) {
     throw httpError(409, "Job already rejected");
   }
 
+  approvalQueue.clear(String(id));
+
   job.status = "rejected";
   await job.save();
+
+  await Application.findOneAndUpdate(
+    { jobId: job._id },
+    { $set: { jobId: job._id, status: "rejected", channel: "manual_api" } },
+    { upsert: true }
+  );
+
   const lean = await Job.findById(job._id).select("-text").lean().exec();
+
+  emitPipeline("approval-resolved", {
+    jobId: String(id),
+    action: "rejected",
+    source: "api",
+  });
+  emitPipeline("dashboard-update", {
+    reason: "job-rejected",
+    jobId: String(id),
+  });
+
+  await logActivity({
+    type: "job_rejected",
+    message: `Job rejected: ${job.role}`,
+    jobId: job._id,
+  });
+
   return lean;
 }
 
@@ -222,34 +314,44 @@ async function deleteJob(id) {
 }
 
 async function getJobStats() {
-  const totalJobs = await Job.countDocuments();
-  const rows = await Job.aggregate([
-    { $group: { _id: "$status", count: { $sum: 1 } } },
-  ]);
-
-  const counts = {
-    pending: 0,
-    approved: 0,
-    auto_applied: 0,
-    rejected: 0,
-    failed: 0,
-  };
-
-  for (const row of rows) {
-    const key = row._id;
-    if (key && Object.prototype.hasOwnProperty.call(counts, key)) {
-      counts[key] = row.count || 0;
-    }
+  if (!isDbReady()) {
+    return { ...EMPTY_JOB_STATS };
   }
 
-  return {
-    totalJobs,
-    pending: counts.pending,
-    approved: counts.approved,
-    autoApplied: counts.auto_applied,
-    rejected: counts.rejected,
-    failed: counts.failed,
-  };
+  try {
+    const totalJobs = await Job.countDocuments();
+    const rows = await Job.aggregate([
+      { $group: { _id: "$status", count: { $sum: 1 } } },
+    ]);
+
+    const counts = {
+      pending: 0,
+      approved: 0,
+      auto_applied: 0,
+      rejected: 0,
+      failed: 0,
+    };
+
+    for (const row of rows) {
+      const key = row._id;
+      if (key && Object.prototype.hasOwnProperty.call(counts, key)) {
+        counts[key] = row.count || 0;
+      }
+    }
+
+    return {
+      total: totalJobs,
+      totalJobs,
+      pending: counts.pending,
+      approved: counts.approved,
+      autoApplied: counts.auto_applied,
+      rejected: counts.rejected,
+      failed: counts.failed,
+    };
+  } catch (err) {
+    console.error("[Jobs] getJobStats failed:", err?.message || err);
+    return { ...EMPTY_JOB_STATS };
+  }
 }
 
 module.exports = {
