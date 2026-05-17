@@ -2,6 +2,7 @@ const { Server } = require("socket.io");
 const { getSocketCorsOptions, getAllowedOrigins } = require("../config/cors");
 const { whatsappSocket } = require("../modules/whatsapp/whatsapp.socket");
 const { pipelineBus, PIPELINE_EVENTS } = require("../services/pipelineBus");
+const logger = require("../utils/logger");
 
 /** @type {import('socket.io').Server | null} */
 let io = null;
@@ -9,6 +10,32 @@ let bridgeAttached = false;
 let heartbeatTimer = null;
 
 const HEARTBEAT_MS = parseInt(process.env.SOCKET_HEARTBEAT_MS || "5000", 10);
+const SOCKET_DEBUG = process.env.SOCKET_DEBUG === "true";
+
+/** Never log these — high frequency / transport noise */
+const SILENT_EVENTS = new Set([
+  "server-heartbeat",
+  "server:hello",
+  "ping",
+  "pong",
+]);
+
+/** Dev-only: log these realtime business events */
+const IMPORTANT_EVENTS = new Set([
+  ...PIPELINE_EVENTS,
+  "job-added",
+  "job-updated",
+  "job-deleted",
+  "resume-uploaded",
+  "resume-updated",
+  "resume-deleted",
+  "whatsapp-status",
+  "qr-updated",
+  "application-added",
+  "application-updated",
+  "telegram-approval-requested",
+  "telegram-approval-updated",
+]);
 
 const socketState = {
   status: "stopped",
@@ -20,40 +47,6 @@ const socketState = {
   lastError: null,
   clients: [],
 };
-
-function previewPayload(payload) {
-  try {
-    const s = JSON.stringify(payload);
-    return s.length > 200 ? `${s.slice(0, 200)}…` : s;
-  } catch {
-    return String(payload);
-  }
-}
-
-function logEmit(scope, event, payload, meta = {}) {
-  console.log(
-    `[Socket Emit] ${event} scope=${scope} ${JSON.stringify({
-      ...meta,
-      preview: previewPayload(payload),
-    })}`
-  );
-}
-
-function logReceive(socketId, event, payload) {
-  console.log(
-    `[Socket Receive] ${event} socketId=${socketId} preview=${previewPayload(payload)}`
-  );
-}
-
-function patchEmitter(emitter, scope) {
-  const originalEmit = emitter.emit.bind(emitter);
-  emitter.emit = function patchedEmit(event, ...args) {
-    logEmit(scope, event, args[0], {
-      heartbeat: event === "server-heartbeat",
-    });
-    return originalEmit(event, ...args);
-  };
-}
 
 function updateClientList() {
   if (!io) {
@@ -86,13 +79,12 @@ function startHeartbeat() {
   stopHeartbeat();
   heartbeatTimer = setInterval(() => {
     if (!io) return;
-    const payload = {
+    socketState.lastHeartbeatAt = new Date().toISOString();
+    io.emit("server-heartbeat", {
       timestamp: Date.now(),
       status: "alive",
       connections: io.engine.clientsCount,
-    };
-    socketState.lastHeartbeatAt = new Date().toISOString();
-    io.emit("server-heartbeat", payload);
+    });
   }, HEARTBEAT_MS);
 }
 
@@ -114,7 +106,7 @@ function attachPipelineBridge() {
       io.emit(eventName, payload);
     });
   });
-  console.log("[Socket] Pipeline bridge attached:", PIPELINE_EVENTS.join(", "));
+  logger.info("Socket", `pipeline bridge attached (${PIPELINE_EVENTS.length} events)`);
 }
 
 function attachSocketBridge() {
@@ -129,32 +121,43 @@ function attachSocketBridge() {
   whatsappSocket.on("whatsapp-status", forward("whatsapp-status"));
   whatsappSocket.on("qr-updated", forward("qr-updated"));
   attachPipelineBridge();
-  console.log("[Socket] WhatsApp bridge attached (whatsapp-status, qr-updated)");
+  logger.info("Socket", "WhatsApp bridge attached");
+}
+
+function attachInboundLogging(socket) {
+  if (!SOCKET_DEBUG) return;
+
+  socket.onAny((event) => {
+    if (SILENT_EVENTS.has(event)) return;
+    if (IMPORTANT_EVENTS.has(event)) {
+      logger.debug("Socket", `in ${event} id=${socket.id}`);
+    }
+  });
 }
 
 function bindConnectionHandlers() {
   io.on("connection", (socket) => {
     const transport = socket.conn?.transport?.name ?? "unknown";
     socketState.connections = io.engine.clientsCount;
-
-    console.log(
-      `[Socket] Client connected: ${socket.id} transport=${transport} namespace=${socket.nsp.name} total=${socketState.connections}`
-    );
-    console.log(`[Socket] Transport: ${transport}`);
-    console.log(`[Socket] Rooms: ${[...socket.rooms].join(", ") || "(default)"}`);
-
     socketState.transports[transport] = (socketState.transports[transport] || 0) + 1;
     updateClientList();
 
-    patchEmitter(socket, `socket:${socket.id}`);
+    logger.info(
+      "Socket",
+      `client connected id=${socket.id} transport=${transport} total=${socketState.connections}`
+    );
 
-    socket.onAny((event, ...args) => {
-      logReceive(socket.id, event, args[0]);
-    });
+    attachInboundLogging(socket);
 
     socket.conn.on("upgrade", (transportObj) => {
-      console.log(
-        `[Socket] Transport upgraded socketId=${socket.id} to=${transportObj?.name}`
+      logger.debug("Socket", `upgraded id=${socket.id} to=${transportObj?.name}`);
+    });
+
+    socket.conn.on("upgradeError", (err) => {
+      logger.warn(
+        "Socket",
+        `websocket upgrade failed id=${socket.id} — staying on polling`,
+        err?.message || err
       );
     });
 
@@ -167,49 +170,39 @@ function bindConnectionHandlers() {
 
     socket.on("disconnect", (reason) => {
       socketState.connections = io.engine.clientsCount;
-      console.log(
-        `[Socket] Client disconnected: ${socket.id} reason=${reason} total=${socketState.connections}`
+      logger.info(
+        "Socket",
+        `client disconnected id=${socket.id} reason=${reason} total=${socketState.connections}`
       );
       updateClientList();
     });
 
     socket.on("error", (err) => {
       socketState.lastError = err?.message || String(err);
-      console.error(`[Socket] Socket error id=${socket.id}:`, socketState.lastError);
+      logger.error("Socket", `socket error id=${socket.id}`, socketState.lastError);
     });
   });
 
   io.engine.on("connection_error", (err) => {
     socketState.lastError = err?.message || String(err);
-    console.error("[Socket] connection_error:", socketState.lastError, err?.context);
-  });
-
-  io.engine.on("initial_headers", (headers, req) => {
-    console.log(
-      `[Socket] handshake from ${req.headers.origin || req.headers.referer || "unknown"}`
-    );
+    logger.error("Socket", "connection_error", socketState.lastError);
   });
 }
 
 function initSocketIO(httpServer) {
   if (io) {
-    console.log("[Socket] already initialized — reusing singleton io");
+    logger.debug("Socket", "already initialized — reusing singleton");
     return io;
   }
 
-  const cors = getSocketCorsOptions();
-  console.log("[Socket] cors config loaded:", JSON.stringify(cors.origin));
-  console.log("[Socket] attaching io to http.Server");
-
   io = new Server(httpServer, {
-    cors,
+    cors: getSocketCorsOptions(),
     connectionStateRecovery: {
       maxDisconnectionDuration: 2 * 60 * 1000,
     },
-    transports: ["websocket", "polling"],
+    transports: ["polling", "websocket"],
   });
 
-  patchEmitter(io, "io");
   bindConnectionHandlers();
   attachSocketBridge();
 
@@ -219,8 +212,7 @@ function initSocketIO(httpServer) {
 
   startHeartbeat();
 
-  console.log("[Socket] server initialized");
-  console.log(`[Socket] heartbeat every ${HEARTBEAT_MS}ms (server-heartbeat)`);
+  logger.info("Socket", `server ready heartbeat=${HEARTBEAT_MS}ms (silent in logs)`);
 
   return io;
 }
@@ -235,7 +227,7 @@ async function closeSocketIO() {
       socketState.clients = [];
       io = null;
       bridgeAttached = false;
-      console.log("[Socket] server closed");
+      logger.info("Socket", "server closed");
       resolve();
     });
   });
