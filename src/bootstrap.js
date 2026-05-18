@@ -11,6 +11,7 @@ const {
 const { initSocketIO, closeSocketIO } = require("./sockets");
 const whatsappService = require("./modules/whatsapp/whatsapp.service");
 const { startTelegram, stopTelegram } = require("./telegram/bot");
+const { isTelegramEnabled } = require("./telegram/config");
 const { sendStartupNotification } = require("./utils/errorNotifier");
 const jobService = require("./jobs/job.service");
 
@@ -74,14 +75,22 @@ async function bootstrap() {
     scheduleMongoReconnect(onMongoReady);
   }
 
-  startTelegram();
-  startup.log("telegram_start_requested");
+  if (isTelegramEnabled()) {
+    try {
+      startTelegram();
+      startup.log("telegram_start_requested");
+      sendStartupNotification().catch(() => {});
+    } catch (err) {
+      console.warn("[Boot] Telegram init non-fatal:", err?.message || err);
+      startup.log("telegram_start_failed", { error: err?.message || String(err) });
+    }
+  } else {
+    startup.log("telegram_disabled");
+  }
 
   if (!mongoOk) {
     startup.log("whatsapp_deferred_until_mongo");
   }
-
-  sendStartupNotification().catch(() => {});
 
   startup.log("boot_complete", { port });
 }
