@@ -10,6 +10,7 @@ const applicationsRoutes = require("./routes/applications.routes");
 const whatsappRoutes = require("./routes/whatsapp.routes");
 const activityRoutes = require("./routes/activity.routes");
 const socketRoutes = require("./routes/socket.routes");
+const analyticsRoutes = require("./analytics/analytics.routes");
 
 const app = express();
 
@@ -35,6 +36,8 @@ app.use("/api/applications", applicationsRoutes);
 app.use("/api/whatsapp", whatsappRoutes);
 app.use("/api/activity", activityRoutes);
 app.use("/api/socket", socketRoutes);
+app.use("/api/analytics", analyticsRoutes);
+console.log("[Analytics] routes mounted");
 
 app.use((req, res) => {
   res.status(404).json({ success: false, message: "Not found", data: null });
