@@ -77,8 +77,23 @@ async function bootstrap() {
 
   if (isTelegramEnabled()) {
     try {
-      startTelegram();
-      startup.log("telegram_start_requested");
+      const instance = startTelegram();
+      const { getTelegramState } = require("./telegram/bot");
+      const { hasTelegramCredentials } = require("./telegram/config");
+      startup.log("telegram_start_requested", {
+        credentials: hasTelegramCredentials(),
+        botCreated: Boolean(instance),
+      });
+      setTimeout(() => {
+        const st = getTelegramState();
+        startup.log("telegram_status", {
+          status: st.status,
+          isPolling: st.isPolling,
+          chatConnected: st.chatConnected,
+          botUsername: st.botUsername,
+          lastError: st.lastError,
+        });
+      }, 2500);
       sendStartupNotification().catch(() => {});
     } catch (err) {
       console.warn("[Boot] Telegram init non-fatal:", err?.message || err);

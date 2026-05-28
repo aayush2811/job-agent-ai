@@ -6,6 +6,8 @@ const applicationEngine = require("./applicationEngine.service");
 const approvalQueue = require("./approvalQueue.service");
 const { sendJobNotification } = require("../telegram/bot");
 const { isDbReady } = require("../utils/dbGuard");
+const matchingService = require("../matching/matching.service");
+const { resolvePipelineUserId } = require("../users/pipelineOwner");
 
 const MIN_SCORE = parseInt(process.env.JOB_MIN_SCORE || "70", 10);
 const AUTO_APPLY_THRESHOLD = parseInt(
@@ -68,7 +70,9 @@ async function processFromExtraction({
     return { ok: false, reason: "low_score", score: scored.score };
   }
 
-  const newJob = await Job.create({
+  const pipelineUserId = await resolvePipelineUserId();
+
+  let newJob = await Job.create({
     messageId,
     text,
     company: extractedData.company || "",
@@ -83,6 +87,7 @@ async function processFromExtraction({
     scoringReasoning: scored.reasoning,
     status: "pending",
     source,
+    userId: pipelineUserId || null,
   });
 
   await logActivity({
@@ -92,8 +97,20 @@ async function processFromExtraction({
     meta: { recommendation: scored.recommendation, source },
   });
 
+  try {
+    await matchingService.matchJobById(newJob._id, { persist: true });
+    newJob = await Job.findById(newJob._id)
+      .populate("recommendedResumeId", "title category isDefault")
+      .exec();
+  } catch (matchErr) {
+    console.warn("[Pipeline] resume match:", matchErr?.message || matchErr);
+  }
+
+  const uid = pipelineUserId ? String(pipelineUserId) : undefined;
+
   emitPipeline("job-created", {
     jobId: String(newJob._id),
+    userId: uid,
     company: newJob.company,
     role: newJob.role,
     source,
@@ -101,6 +118,7 @@ async function processFromExtraction({
 
   emitPipeline("job-scored", {
     jobId: String(newJob._id),
+    userId: uid,
     score: scored.score,
     recommendation: scored.recommendation,
     reasoning: scored.reasoning.slice(0, 12),
@@ -109,6 +127,7 @@ async function processFromExtraction({
   emitPipeline("dashboard-update", {
     reason: "job-created",
     jobId: String(newJob._id),
+    userId: uid,
   });
 
   if (scored.score >= AUTO_APPLY_THRESHOLD) {
@@ -127,6 +146,7 @@ async function processFromExtraction({
 
   emitPipeline("approval-pending", {
     jobId: String(newJob._id),
+    userId: uid,
     role: newJob.role,
     company: newJob.company,
     expiresInMs: approvalQueue.APPROVAL_TIMEOUT_MS,
@@ -134,6 +154,7 @@ async function processFromExtraction({
   emitPipeline("dashboard-update", {
     reason: "approval-pending",
     jobId: String(newJob._id),
+    userId: uid,
   });
 
   await logActivity({

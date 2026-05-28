@@ -15,7 +15,7 @@ const EMPTY_ANALYTICS = {
 router.get(
   "/stats",
   asyncHandler(async (req, res) => {
-    const stats = await jobService.getJobStats();
+    const stats = await jobService.getJobStats(req.user.id);
     res.json({
       success: true,
       data: {
@@ -48,7 +48,7 @@ router.get(
 router.get(
   "/analytics",
   asyncHandler(async (req, res) => {
-    const stats = await jobService.getJobStats();
+    const stats = await jobService.getJobStats(req.user.id);
     res.json({
       success: true,
       data: {

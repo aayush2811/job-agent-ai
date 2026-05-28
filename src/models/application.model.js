@@ -33,6 +33,13 @@ const applicationSchema = new mongoose.Schema(
     lastError: { type: String },
     appliedAt: Date,
     metadata: { type: mongoose.Schema.Types.Mixed },
+
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      index: true,
+      default: null,
+    },
   },
   { timestamps: true }
 );

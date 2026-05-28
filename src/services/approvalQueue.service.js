@@ -64,14 +64,17 @@ async function onApprovalTimeout(jobId) {
   job.approvalTimedOut = true;
   await job.save();
 
+  const uid = job.userId ? String(job.userId) : undefined;
   emitPipeline("approval-timeout", {
     jobId: String(jobId),
+    userId: uid,
     company: job.company,
     role: job.role,
   });
   emitPipeline("dashboard-update", {
     reason: "approval-timeout",
     jobId: String(jobId),
+    userId: uid,
   });
 
   await logActivity({

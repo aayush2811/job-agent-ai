@@ -1,5 +1,6 @@
 const { sendWarningAlert } = require("../utils/errorNotifier");
 const { isTelegramEnabled, hasTelegramCredentials } = require("./config");
+const { resolveChatForJob, resolveOwnerUserIdForJob, resolveChatIdForUser } = require("./chatResolver");
 
 /** @type {import('node-telegram-bot-api') | null} */
 let bot = null;
@@ -17,6 +18,8 @@ const telegramState = {
   status: "disabled",
   enabled: false,
   lastError: null,
+  botUsername: null,
+  chatConnected: false,
 };
 
 let lastPollingLogAt = 0;
@@ -25,14 +28,20 @@ const POLLING_LOG_THROTTLE_MS = 30_000;
 function getTelegramState() {
   return {
     ...telegramState,
+    enabled: isTelegramEnabled(),
     isPolling,
     pollingBackoffAttempt,
     hasBot: Boolean(bot),
+    hasCredentials: hasTelegramCredentials(),
   };
 }
 
 function getBot() {
   return bot;
+}
+
+function canSendOutbound() {
+  return isTelegramEnabled() && hasTelegramCredentials() && Boolean(bot);
 }
 
 function clearPollingRetry() {
@@ -86,6 +95,28 @@ function schedulePollingRestart() {
   }, delay);
 }
 
+async function verifyBotConnection(instance) {
+  try {
+    const me = await instance.getMe();
+    telegramState.botUsername = me.username || null;
+    console.log(
+      `[Telegram] bot initialized @${me.username || "unknown"} (id=${me.id})`
+    );
+
+    const chatId = process.env.TELEGRAM_CHAT_ID;
+    if (chatId) {
+      telegramState.chatConnected = true;
+      console.log(`[Telegram] chat connected (TELEGRAM_CHAT_ID=${chatId})`);
+    } else {
+      telegramState.chatConnected = false;
+      console.warn("[Telegram] TELEGRAM_CHAT_ID missing — outbound notifications disabled");
+    }
+  } catch (err) {
+    telegramState.chatConnected = false;
+    console.error("[Telegram] bot getMe failed:", err?.message || err);
+  }
+}
+
 function startPollingOnce() {
   if (!bot || isShuttingDown || isPolling) return Promise.resolve();
   if (startInProgress) return Promise.resolve();
@@ -103,6 +134,8 @@ function startPollingOnce() {
     telegramState.status = "running";
     telegramState.lastError = null;
     console.log("[Telegram] polling started");
+    console.log("[Telegram] polling connected — listening for approval callbacks");
+    verifyBotConnection(bot).catch(() => {});
   } catch (err) {
     isPolling = false;
     telegramState.status = "error";
@@ -140,7 +173,14 @@ function bindHandlers(instance) {
 
       if (action === "approve") {
         try {
-          const job = await jobService.approveJob(jobId, { channel: "telegram" });
+          const userId = await resolveOwnerUserIdForJob(jobId);
+          if (!userId) {
+            await instance.answerCallbackQuery(query.id, {
+              text: "No owner for job — set DEFAULT_PIPELINE_USER_ID",
+            });
+            return;
+          }
+          const job = await jobService.approveJob(jobId, userId, { channel: "telegram" });
           await instance.editMessageReplyMarkup(
             { inline_keyboard: [[{ text: "✅ APPROVED", callback_data: "approved" }]] },
             { chat_id: query.message.chat.id, message_id: query.message.message_id }
@@ -170,7 +210,12 @@ function bindHandlers(instance) {
 
       if (action === "reject") {
         try {
-          const job = await jobService.rejectJob(jobId);
+          const userId = await resolveOwnerUserIdForJob(jobId);
+          if (!userId) {
+            await instance.answerCallbackQuery(query.id, { text: "No job owner configured" });
+            return;
+          }
+          const job = await jobService.rejectJob(jobId, userId);
           await instance.editMessageReplyMarkup(
             { inline_keyboard: [[{ text: "❌ REJECTED", callback_data: "rejected" }]] },
             { chat_id: query.message.chat.id, message_id: query.message.message_id }
@@ -200,15 +245,33 @@ function bindHandlers(instance) {
   });
 }
 
+function logStartupConfig() {
+  const enabled = isTelegramEnabled();
+  const creds = hasTelegramCredentials();
+  console.log(`[Telegram] enabled=${enabled}`);
+  console.log(`[Telegram] credentials=${creds ? "present" : "missing"}`);
+  if (enabled && creds) {
+    console.log(`[Telegram] TELEGRAM_CHAT_ID=${process.env.TELEGRAM_CHAT_ID ? "set" : "MISSING"}`);
+    console.log(`[Telegram] TELEGRAM_BOT_TOKEN=${process.env.TELEGRAM_BOT_TOKEN ? "set" : "MISSING"}`);
+  }
+}
+
 /**
  * Starts the Telegram bot singleton. Never throws; failures are logged only.
- * @returns {import('node-telegram-bot-api') | null}
  */
 function startTelegram() {
+  logStartupConfig();
   telegramState.enabled = isTelegramEnabled();
 
   if (!isTelegramEnabled()) {
     telegramState.status = "disabled";
+    console.log("[Telegram] disabled (TELEGRAM_ENABLED is not true)");
+    return null;
+  }
+
+  if (!hasTelegramCredentials()) {
+    telegramState.status = "disabled";
+    console.warn("[Telegram] missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID — bot not started");
     return null;
   }
 
@@ -232,6 +295,7 @@ function startTelegram() {
   try {
     const TelegramBot = require("node-telegram-bot-api");
     bot = new TelegramBot(token, { polling: false });
+    console.log("[Telegram] bot client created");
     bindHandlers(bot);
     startPollingOnce().catch(() => {});
     return bot;
@@ -263,25 +327,98 @@ async function stopTelegram() {
   pollingBackoffAttempt = 0;
   isPolling = false;
   telegramState.status = "stopped";
+  console.log("[Telegram] stopped");
+}
+
+async function sendMessageToChat(chatId, text, extra = {}) {
+  if (!canSendOutbound() || !chatId) {
+    return { ok: false, error: "Telegram not ready or chat id missing" };
+  }
+  try {
+    await bot.sendMessage(chatId, text, extra);
+    return { ok: true, chatId };
+  } catch (error) {
+    console.error("[Telegram] sendMessage error:", error?.message || error);
+    return { ok: false, error: error?.message || String(error) };
+  }
+}
+
+async function sendTestMessage(userId) {
+  if (!isTelegramEnabled()) {
+    return { ok: false, statusCode: 503, error: "Telegram disabled (TELEGRAM_ENABLED)" };
+  }
+  if (!hasTelegramCredentials()) {
+    return { ok: false, statusCode: 503, error: "Missing bot token or chat id" };
+  }
+  if (!bot) {
+    startTelegram();
+  }
+  if (!bot) {
+    return { ok: false, statusCode: 503, error: "Bot not initialized" };
+  }
+
+  const chatId = resolveChatIdForUser(userId);
+  if (!chatId) {
+    return {
+      ok: false,
+      statusCode: 400,
+      error: "No chat id for user — set TELEGRAM_CHAT_ID or TELEGRAM_CHAT_MAP",
+    };
+  }
+
+  const text = "✅ Telegram integration working";
+  const result = await sendMessageToChat(chatId, text);
+  if (!result.ok) {
+    return { ok: false, statusCode: 502, error: result.error, chatId };
+  }
+  return { ok: true, chatId, userId: userId ? String(userId) : null };
 }
 
 const sendJobNotification = async (job) => {
-  if (!isTelegramEnabled() || !hasTelegramCredentials()) return;
-  const instance = getBot();
-  if (!instance || !isPolling) return;
+  if (!canSendOutbound()) {
+    console.warn("[Telegram] skip job notification — outbound not ready");
+    return;
+  }
 
   try {
+    const { chatId, userId } = await resolveChatForJob(job);
+    if (!chatId) {
+      console.warn("[Telegram] skip job notification — no chat id for user", userId);
+      return;
+    }
+
+    const aiScore = job.resumeMatchScore ?? 0;
+    const confidence = job.confidence ?? 0;
+    const resumeTitle =
+      job.recommendedResumeId?.title ||
+      (typeof job.recommendedResumeId === "object" && job.recommendedResumeId?.title) ||
+      "—";
+    const matched =
+      Array.isArray(job.matchedSkills) && job.matchedSkills.length
+        ? job.matchedSkills.slice(0, 8).join(", ")
+        : "—";
+    const missing =
+      Array.isArray(job.missingSkills) && job.missingSkills.length
+        ? job.missingSkills.slice(0, 8).join(", ")
+        : "—";
+
     const message = `
-🔥 New Job Match
+🔥 New Job Match — Approval Required
 
 🏢 Company: ${job.company}
 💼 Role: ${job.role}
-📍 Location: ${job.location}
-🎯 Match Score: ${job.matchScore}%
+📍 Location: ${job.location || "—"}
+📊 Pipeline Score: ${job.matchScore ?? 0}%
+🤖 AI Resume Match: ${aiScore}%
+🎯 Confidence: ${confidence}%
+📄 Recommended Resume: ${resumeTitle}
+✅ Matched Skills: ${matched}
+⚠️ Missing Skills: ${missing}
+📈 Experience: ${job.experienceMatch || "—"}
 📧 Email: ${job.email}
 `;
 
-    await instance.sendMessage(process.env.TELEGRAM_CHAT_ID, message, {
+    await bot.sendMessage(chatId, message, {
       reply_markup: {
         inline_keyboard: [
           [
@@ -291,6 +428,16 @@ const sendJobNotification = async (job) => {
         ],
       },
     });
+
+    const { emitPipeline } = require("../services/pipelineBus");
+    emitPipeline("telegram-approval-requested", {
+      jobId: String(job._id),
+      userId: userId || (job.userId ? String(job.userId) : undefined),
+      role: job.role,
+      company: job.company,
+    });
+
+    console.log(`[Telegram] approval notification sent job=${job._id} chat=${chatId}`);
   } catch (error) {
     console.error("[Telegram] job notification error:", error?.message || error);
     sendWarningAlert("Telegram Job Notification Failed", error).catch(() => {});
@@ -298,22 +445,59 @@ const sendJobNotification = async (job) => {
 };
 
 const sendAutoApplyNotification = async (job) => {
-  if (!isTelegramEnabled() || !hasTelegramCredentials()) return;
-  const instance = getBot();
-  if (!instance || !isPolling) return;
+  if (!canSendOutbound()) return;
 
   try {
+    const { chatId } = await resolveChatForJob(job);
+    if (!chatId) return;
+
     const message = `
 🚀 Auto Applied Successfully
 
 🏢 Company: ${job.company}
 💼 Role: ${job.role}
 🎯 Match Score: ${job.matchScore}%
+🤖 AI Match: ${job.resumeMatchScore ?? "—"}%
 `;
-    await instance.sendMessage(process.env.TELEGRAM_CHAT_ID, message);
+    await bot.sendMessage(chatId, message);
+    console.log(`[Telegram] auto-apply notification sent job=${job._id}`);
   } catch (error) {
     console.error("[Telegram] auto-apply notify error:", error?.message || error);
     sendWarningAlert("Telegram Auto-Apply Notification Failed", error).catch(() => {});
+  }
+};
+
+const sendApplyFailedNotification = async (job, errorMessage) => {
+  if (!canSendOutbound()) return;
+
+  try {
+    const { chatId } = await resolveChatForJob(job);
+    if (!chatId) return;
+
+    const message = `
+❌ Application Failed
+
+🏢 ${job.company}
+💼 ${job.role}
+⚠️ ${errorMessage || "Unknown error"}
+`;
+    await bot.sendMessage(chatId, message);
+  } catch (error) {
+    console.error("[Telegram] apply-failed notify error:", error?.message || error);
+  }
+};
+
+const sendMatchUpdatedNotification = async (job) => {
+  if (!canSendOutbound()) return;
+
+  try {
+    const { chatId } = await resolveChatForJob(job);
+    if (!chatId) return;
+
+    const message = `🎯 Match updated: ${job.role} @ ${job.company} — AI score ${job.resumeMatchScore ?? 0}%`;
+    await bot.sendMessage(chatId, message);
+  } catch (error) {
+    console.error("[Telegram] match notify error:", error?.message || error);
   }
 };
 
@@ -324,4 +508,7 @@ module.exports = {
   getTelegramState,
   sendJobNotification,
   sendAutoApplyNotification,
+  sendApplyFailedNotification,
+  sendMatchUpdatedNotification,
+  sendTestMessage,
 };

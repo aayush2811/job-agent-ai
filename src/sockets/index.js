@@ -2,6 +2,8 @@ const { Server } = require("socket.io");
 const { getSocketCorsOptions, getAllowedOrigins } = require("../config/cors");
 const { whatsappSocket } = require("../modules/whatsapp/whatsapp.socket");
 const { pipelineBus, PIPELINE_EVENTS } = require("../services/pipelineBus");
+const { verifyAccessToken } = require("../auth/jwt");
+const { userRoom } = require("./emitToUser");
 const logger = require("../utils/logger");
 
 /** @type {import('socket.io').Server | null} */
@@ -80,11 +82,14 @@ function startHeartbeat() {
   heartbeatTimer = setInterval(() => {
     if (!io) return;
     socketState.lastHeartbeatAt = new Date().toISOString();
-    io.emit("server-heartbeat", {
-      timestamp: Date.now(),
-      status: "alive",
-      connections: io.engine.clientsCount,
-    });
+    for (const socket of io.sockets.sockets.values()) {
+      if (socket.data?.userId) {
+        socket.emit("server-heartbeat", {
+          timestamp: Date.now(),
+          status: "alive",
+        });
+      }
+    }
   }, HEARTBEAT_MS);
 }
 
@@ -103,7 +108,13 @@ function attachPipelineBridge() {
   PIPELINE_EVENTS.forEach((eventName) => {
     pipelineBus.on(eventName, (payload) => {
       if (!io) return;
-      io.emit(eventName, payload);
+      const userId = payload?.userId;
+      if (userId) {
+        io.to(userRoom(userId)).emit(eventName, {
+          ...payload,
+          at: new Date().toISOString(),
+        });
+      }
     });
   });
   logger.info("Socket", `pipeline bridge attached (${PIPELINE_EVENTS.length} events)`);
@@ -115,7 +126,10 @@ function attachSocketBridge() {
 
   const forward = (event) => (payload) => {
     if (!io) return;
-    io.emit(event, payload);
+    const userId = payload?.userId;
+    if (userId) {
+      io.to(userRoom(userId)).emit(event, { ...payload, at: new Date().toISOString() });
+    }
   };
 
   whatsappSocket.on("whatsapp-status", forward("whatsapp-status"));
@@ -131,6 +145,23 @@ function attachInboundLogging(socket) {
     if (SILENT_EVENTS.has(event)) return;
     if (IMPORTANT_EVENTS.has(event)) {
       logger.debug("Socket", `in ${event} id=${socket.id}`);
+    }
+  });
+}
+
+function attachSocketAuth() {
+  io.use((socket, next) => {
+    try {
+      const raw =
+        socket.handshake.auth?.token ||
+        (socket.handshake.headers?.authorization || "").replace(/^Bearer\s+/i, "");
+      if (!raw) return next(new Error("Authentication required"));
+      const payload = verifyAccessToken(raw);
+      socket.data.userId = payload.sub;
+      socket.join(userRoom(payload.sub));
+      return next();
+    } catch (err) {
+      return next(new Error("Invalid or expired token"));
     }
   });
 }
@@ -203,6 +234,7 @@ function initSocketIO(httpServer) {
     transports: ["polling", "websocket"],
   });
 
+  attachSocketAuth();
   bindConnectionHandlers();
   attachSocketBridge();
 

@@ -51,6 +51,38 @@ const jobSchema = new mongoose.Schema(
       default: 0,
     },
 
+    /** Deterministic resume ↔ job match (0–100) */
+    resumeMatchScore: {
+      type: Number,
+      default: 0,
+    },
+
+    recommendedResumeId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Resume",
+      default: null,
+    },
+
+    matchedSkills: {
+      type: [String],
+      default: [],
+    },
+
+    missingSkills: {
+      type: [String],
+      default: [],
+    },
+
+    confidence: {
+      type: Number,
+      default: 0,
+    },
+
+    experienceMatch: {
+      type: String,
+      default: "",
+    },
+
     scoreBreakdown: mongoose.Schema.Types.Mixed,
 
     scoreRecommendation: String,
@@ -71,6 +103,13 @@ const jobSchema = new mongoose.Schema(
     source: {
       type: String,
       default: "WhatsApp",
+    },
+
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      index: true,
+      default: null,
     },
   },
   {

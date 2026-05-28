@@ -3,6 +3,7 @@ const Application = require("../models/application.model");
 const ActivityLog = require("../models/activityLog.model");
 const jobService = require("../jobs/job.service");
 const { isDbReady } = require("../utils/dbGuard");
+const { ownedBy } = require("../middleware/ownership");
 
 const EMPTY_DASHBOARD = {
   jobsByDay: [],
@@ -32,9 +33,10 @@ function mapDaySeries(rows, valueKey = "count") {
   }));
 }
 
-async function aggregateJobsByDay(since) {
+async function aggregateJobsByDay(since, userId) {
+  const owner = userId ? ownedBy(userId) : {};
   const rows = await Job.aggregate([
-    { $match: { createdAt: { $gte: since } } },
+    { $match: { ...owner, createdAt: { $gte: since } } },
     {
       $group: {
         _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
@@ -53,9 +55,10 @@ async function aggregateJobsByDay(since) {
   };
 }
 
-async function aggregateApplicationsByDay(since) {
+async function aggregateApplicationsByDay(since, userId) {
+  const owner = userId ? ownedBy(userId) : {};
   const rows = await Application.aggregate([
-    { $match: { createdAt: { $gte: since } } },
+    { $match: { ...owner, createdAt: { $gte: since } } },
     {
       $group: {
         _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
@@ -77,8 +80,8 @@ function buildFunnel(stats) {
   };
 }
 
-async function getDashboardAnalytics(range = "7d") {
-  const stats = await jobService.getJobStats();
+async function getDashboardAnalytics(range = "7d", userId = null) {
+  const stats = await jobService.getJobStats(userId);
   const payload = {
     ...EMPTY_DASHBOARD,
     summary: stats,
@@ -90,8 +93,8 @@ async function getDashboardAnalytics(range = "7d") {
 
   try {
     const since = rangeStart(range);
-    const { jobsByDay, avgMatchScoreByDay } = await aggregateJobsByDay(since);
-    const applicationsByDay = await aggregateApplicationsByDay(since);
+    const { jobsByDay, avgMatchScoreByDay } = await aggregateJobsByDay(since, userId);
+    const applicationsByDay = await aggregateApplicationsByDay(since, userId);
     return {
       ...payload,
       jobsByDay,
@@ -104,7 +107,7 @@ async function getDashboardAnalytics(range = "7d") {
   }
 }
 
-async function getApplicationsAnalytics(range = "7d") {
+async function getApplicationsAnalytics(range = "7d", userId = null) {
   const empty = {
     range: range || "7d",
     totals: { all: 0, pending: 0, applying: 0, applied: 0, failed: 0, retrying: 0, rejected: 0 },
@@ -116,12 +119,13 @@ async function getApplicationsAnalytics(range = "7d") {
 
   try {
     const since = rangeStart(range);
+    const owner = userId ? ownedBy(userId) : {};
     const statusRows = await Application.aggregate([
-      { $match: { createdAt: { $gte: since } } },
+      { $match: { ...owner, createdAt: { $gte: since } } },
       { $group: { _id: "$status", count: { $sum: 1 } } },
     ]);
     const channelRows = await Application.aggregate([
-      { $match: { createdAt: { $gte: since } } },
+      { $match: { ...owner, createdAt: { $gte: since } } },
       { $group: { _id: "$channel", count: { $sum: 1 } } },
     ]);
 
@@ -143,7 +147,7 @@ async function getApplicationsAnalytics(range = "7d") {
       }
     }
 
-    const recent = await Application.find({ createdAt: { $gte: since } })
+    const recent = await Application.find({ ...owner, createdAt: { $gte: since } })
       .sort({ updatedAt: -1 })
       .limit(25)
       .populate("jobId", "company role matchScore status")
@@ -157,8 +161,8 @@ async function getApplicationsAnalytics(range = "7d") {
   }
 }
 
-async function getPipelineAnalytics() {
-  const stats = await jobService.getJobStats();
+async function getPipelineAnalytics(userId = null) {
+  const stats = await jobService.getJobStats(userId);
   const stages = [
     { stage: "pending", count: stats.pending ?? 0 },
     { stage: "approved", count: stats.approved ?? 0 },
@@ -184,7 +188,9 @@ async function getPipelineAnalytics() {
   if (!isDbReady()) return payload;
 
   try {
+    const owner = userId ? ownedBy(userId) : {};
     const appRows = await Application.aggregate([
+      { $match: owner },
       { $group: { _id: "$status", count: { $sum: 1 } } },
     ]);
     for (const row of appRows) {
@@ -199,7 +205,7 @@ async function getPipelineAnalytics() {
   }
 }
 
-async function getRealtimeAnalytics() {
+async function getRealtimeAnalytics(userId = null) {
   let socket = { status: "unknown", connections: 0 };
   try {
     const { getSocketState } = require("../sockets");
@@ -216,12 +222,22 @@ async function getRealtimeAnalytics() {
     whatsapp = { status: "unavailable", lastError: err?.message };
   }
 
-  const stats = await jobService.getJobStats();
+  const stats = await jobService.getJobStats(userId);
   let recentActivity = [];
 
   if (isDbReady()) {
     try {
-      recentActivity = await ActivityLog.find()
+      const jobIds = userId
+        ? await Job.find(ownedBy(userId)).select("_id").lean()
+        : [];
+      const idList = jobIds.map((j) => j._id);
+      const activityFilter =
+        userId && idList.length
+          ? { jobId: { $in: idList } }
+          : userId
+            ? { jobId: null }
+            : {};
+      recentActivity = await ActivityLog.find(activityFilter)
         .sort({ createdAt: -1 })
         .limit(20)
         .select("type message severity createdAt jobId")
@@ -241,9 +257,31 @@ async function getRealtimeAnalytics() {
   };
 }
 
+async function getPlatforms(userId = null) {
+  if (!isDbReady()) {
+    return { platforms: [{ name: "WhatsApp", jobs: 0 }] };
+  }
+  try {
+    const owner = userId ? ownedBy(userId) : {};
+    const rows = await Job.aggregate([
+      { $match: owner },
+      { $group: { _id: { $ifNull: ["$source", "WhatsApp"] }, count: { $sum: 1 } } },
+    ]);
+    return {
+      platforms: rows.length
+        ? rows.map((r) => ({ name: r._id, jobs: r.count }))
+        : [{ name: "WhatsApp", jobs: 0 }],
+    };
+  } catch (err) {
+    console.error("[Analytics] getPlatforms:", err?.message || err);
+    return { platforms: [{ name: "WhatsApp", jobs: 0 }] };
+  }
+}
+
 module.exports = {
   getDashboardAnalytics,
   getApplicationsAnalytics,
   getPipelineAnalytics,
   getRealtimeAnalytics,
+  getPlatforms,
 };

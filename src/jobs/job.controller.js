@@ -9,7 +9,7 @@ function sendError(res, statusCode, message) {
 }
 
 async function getJobs(req, res) {
-  const data = await jobService.getJobs(req.query);
+  const data = await jobService.getJobs(req.query, req.user.id);
   res.json({
     success: true,
     message: "Jobs fetched",
@@ -19,7 +19,7 @@ async function getJobs(req, res) {
 
 async function getJobById(req, res) {
   try {
-    const job = await jobService.getJobById(req.params.id);
+    const job = await jobService.getJobById(req.params.id, req.user.id);
     res.json({
       success: true,
       message: "Job fetched",
@@ -33,7 +33,7 @@ async function getJobById(req, res) {
 
 async function approveJob(req, res) {
   try {
-    const job = await jobService.approveJob(req.params.id);
+    const job = await jobService.approveJob(req.params.id, req.user.id);
     res.json({
       success: true,
       message: "Job approved",
@@ -47,7 +47,7 @@ async function approveJob(req, res) {
 
 async function rejectJob(req, res) {
   try {
-    const job = await jobService.rejectJob(req.params.id);
+    const job = await jobService.rejectJob(req.params.id, req.user.id);
     res.json({
       success: true,
       message: "Job rejected",
@@ -61,7 +61,7 @@ async function rejectJob(req, res) {
 
 async function deleteJob(req, res) {
   try {
-    const job = await jobService.deleteJob(req.params.id);
+    const job = await jobService.deleteJob(req.params.id, req.user.id);
     res.json({
       success: true,
       message: "Job deleted",
@@ -74,7 +74,7 @@ async function deleteJob(req, res) {
 }
 
 async function getJobStats(req, res) {
-  const stats = await jobService.getJobStats();
+  const stats = await jobService.getJobStats(req.user.id);
   res.json({
     success: true,
     message: "Job stats fetched",

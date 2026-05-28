@@ -1,6 +1,7 @@
 const mongoose = require("mongoose");
 const Job = require("./job.model");
 const { isDbReady } = require("../utils/dbGuard");
+const { ownedBy } = require("../middleware/ownership");
 const approvalQueue = require("../services/approvalQueue.service");
 const applicationEngine = require("../services/applicationEngine.service");
 const { emitPipeline } = require("../services/pipelineBus");
@@ -115,7 +116,14 @@ async function migrateLegacyJobStatuses() {
   }
 }
 
-async function getJobs(query) {
+async function assertJobOwner(id, userId) {
+  assertValidObjectId(id);
+  const job = await Job.findOne({ _id: id, ...ownedBy(userId) }).exec();
+  if (!job) throw httpError(404, "Job not found");
+  return job;
+}
+
+async function getJobs(query, userId) {
   if (!isDbReady()) {
     return {
       ...EMPTY_JOBS_LIST,
@@ -137,7 +145,7 @@ async function getJobs(query) {
   const limit = Math.min(Math.max(1, limitRaw), MAX_LIMIT);
   const skip = (page - 1) * limit;
 
-  const filter = {};
+  const filter = { ...ownedBy(userId) };
   if (query.status && typeof query.status === "string") {
     const st = String(query.status);
     if (VALID_STATUSES.has(st)) {
@@ -165,6 +173,7 @@ async function getJobs(query) {
         .skip(skip)
         .limit(limit)
         .select("-text")
+        .populate("recommendedResumeId", "title category isDefault fileUrl")
         .lean()
         .exec(),
     ]);
@@ -189,21 +198,24 @@ async function getJobs(query) {
   }
 }
 
-async function getJobById(id) {
+async function getJobById(id, userId) {
   if (!isDbReady()) {
     throw httpError(503, "Database unavailable");
   }
   assertValidObjectId(id);
-  const job = await Job.findById(id).lean().exec();
+  const job = await Job.findOne({ _id: id, ...ownedBy(userId) })
+    .populate("recommendedResumeId", "title category isDefault fileUrl")
+    .lean()
+    .exec();
   if (!job) {
     throw httpError(404, "Job not found");
   }
   return job;
 }
 
-async function approveJob(id, options = {}) {
+async function approveJob(id, userId, options = {}) {
   assertValidObjectId(id);
-  const job = await Job.findById(id).exec();
+  const job = await assertJobOwner(id, userId);
   if (!job) {
     throw httpError(404, "Job not found");
   }
@@ -232,14 +244,17 @@ async function approveJob(id, options = {}) {
 
   const lean = await Job.findById(job._id).select("-text").lean().exec();
 
+  const uid = job.userId ? String(job.userId) : undefined;
   emitPipeline("approval-resolved", {
     jobId: String(id),
+    userId: uid,
     action: "approved",
     source,
   });
   emitPipeline("dashboard-update", {
     reason: "approval-approved",
     jobId: String(id),
+    userId: uid,
   });
 
   await logActivity({
@@ -252,12 +267,9 @@ async function approveJob(id, options = {}) {
   return lean;
 }
 
-async function rejectJob(id) {
+async function rejectJob(id, userId) {
   assertValidObjectId(id);
-  const job = await Job.findById(id).exec();
-  if (!job) {
-    throw httpError(404, "Job not found");
-  }
+  const job = await assertJobOwner(id, userId);
 
   if (job.applied || job.emailSent) {
     throw httpError(409, "Cannot reject a job that was already processed");
@@ -280,14 +292,17 @@ async function rejectJob(id) {
 
   const lean = await Job.findById(job._id).select("-text").lean().exec();
 
+  const uid = job.userId ? String(job.userId) : undefined;
   emitPipeline("approval-resolved", {
     jobId: String(id),
+    userId: uid,
     action: "rejected",
     source: "api",
   });
   emitPipeline("dashboard-update", {
     reason: "job-rejected",
     jobId: String(id),
+    userId: uid,
   });
 
   await logActivity({
@@ -299,9 +314,9 @@ async function rejectJob(id) {
   return lean;
 }
 
-async function deleteJob(id) {
+async function deleteJob(id, userId) {
   assertValidObjectId(id);
-  const deleted = await Job.findOneAndDelete({ _id: id })
+  const deleted = await Job.findOneAndDelete({ _id: id, ...ownedBy(userId) })
     .select(
       "_id company role status matchScore applied emailSent appliedAt createdAt"
     )
@@ -313,14 +328,17 @@ async function deleteJob(id) {
   return deleted;
 }
 
-async function getJobStats() {
+async function getJobStats(userId) {
   if (!isDbReady()) {
     return { ...EMPTY_JOB_STATS };
   }
 
+  const owner = ownedBy(userId);
+
   try {
-    const totalJobs = await Job.countDocuments();
+    const totalJobs = await Job.countDocuments(owner);
     const rows = await Job.aggregate([
+      { $match: owner },
       { $group: { _id: "$status", count: { $sum: 1 } } },
     ]);
 

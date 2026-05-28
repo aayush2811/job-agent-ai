@@ -11,27 +11,33 @@ function sendSuccess(res, data, message) {
 async function getDashboard(req, res) {
   console.log("[Analytics] dashboard route hit");
   const range = req.query.range || "7d";
-  const data = await analyticsService.getDashboardAnalytics(range);
+  const data = await analyticsService.getDashboardAnalytics(range, req.user.id);
   sendSuccess(res, data, "Dashboard analytics");
 }
 
 async function getApplications(req, res) {
   console.log("[Analytics] applications route hit");
   const range = req.query.range || "7d";
-  const data = await analyticsService.getApplicationsAnalytics(range);
+  const data = await analyticsService.getApplicationsAnalytics(range, req.user.id);
   sendSuccess(res, data, "Application analytics");
 }
 
 async function getPipeline(req, res) {
   console.log("[Analytics] pipeline route hit");
-  const data = await analyticsService.getPipelineAnalytics();
+  const data = await analyticsService.getPipelineAnalytics(req.user.id);
   sendSuccess(res, data, "Pipeline analytics");
 }
 
 async function getRealtime(req, res) {
   console.log("[Analytics] realtime route hit");
-  const data = await analyticsService.getRealtimeAnalytics();
+  const data = await analyticsService.getRealtimeAnalytics(req.user.id);
   sendSuccess(res, data, "Realtime analytics");
+}
+
+async function getPlatforms(req, res) {
+  console.log("[Analytics] platforms route hit");
+  const data = await analyticsService.getPlatforms(req.user.id);
+  sendSuccess(res, data, "Platform analytics");
 }
 
 module.exports = {
@@ -39,4 +45,5 @@ module.exports = {
   getApplications,
   getPipeline,
   getRealtime,
+  getPlatforms,
 };

@@ -1,6 +1,6 @@
 const Job = require("../jobs/job.model");
 const sendJobApplicationEmail = require("../email/sendEmail");
-const { sendAutoApplyNotification } = require("../telegram/bot");
+const { sendAutoApplyNotification, sendApplyFailedNotification } = require("../telegram/bot");
 const { sendErrorAlert } = require("../utils/errorNotifier");
 const Application = require("../models/application.model");
 const { logActivity } = require("./activityLog.service");
@@ -13,12 +13,29 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function upsertApplication(jobId, patch) {
+function ownerId(job) {
+  return job?.userId ? String(job.userId) : undefined;
+}
+
+async function upsertApplication(jobId, patch, jobDoc = null) {
+  let userId = patch.userId;
+  if (!userId) {
+    const job = jobDoc || (await Job.findById(jobId).select("userId").lean());
+    userId = job?.userId || null;
+  }
   return Application.findOneAndUpdate(
     { jobId },
-    { $set: { jobId, ...patch } },
+    { $set: { jobId, userId, ...patch } },
     { new: true, upsert: true }
   );
+}
+
+function pipelineExtras(job, extra = {}) {
+  return {
+    ...extra,
+    jobId: String(job._id),
+    userId: ownerId(job),
+  };
 }
 
 async function applyJobWithRetry(job, options) {
@@ -31,7 +48,7 @@ async function applyJobWithRetry(job, options) {
     attempts: 0,
   });
 
-  emitPipeline("dashboard-update", { reason: "application-start", jobId: String(jobId) });
+  emitPipeline("dashboard-update", pipelineExtras(job, { reason: "application-start" }));
 
   let lastErr;
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt += 1) {
@@ -41,11 +58,10 @@ async function applyJobWithRetry(job, options) {
     });
 
     if (attempt > 1) {
-      emitPipeline("application-retrying", {
-        jobId: String(jobId),
-        attempt,
-        max: MAX_RETRIES,
-      });
+      emitPipeline(
+        "application-retrying",
+        pipelineExtras(job, { attempt, max: MAX_RETRIES })
+      );
       await logActivity({
         type: "apply_retry",
         message: `Retry ${attempt}/${MAX_RETRIES} for ${job.role}`,
@@ -81,13 +97,11 @@ async function applyJobWithRetry(job, options) {
         meta: { source, attempts: attempt },
       });
 
-      emitPipeline("job-applied", {
-        jobId: String(jobId),
-        status: job.status,
-        source,
-        attempts: attempt,
-      });
-      emitPipeline("dashboard-update", { reason: "job-applied", jobId: String(jobId) });
+      emitPipeline(
+        "job-applied",
+        pipelineExtras(job, { status: job.status, source, attempts: attempt })
+      );
+      emitPipeline("dashboard-update", pipelineExtras(job, { reason: "job-applied" }));
 
       if (typeof onSuccessExtra === "function") {
         await onSuccessExtra(job);
@@ -119,12 +133,14 @@ async function applyJobWithRetry(job, options) {
     lastError: lastErr?.message || String(lastErr),
   });
 
-  emitPipeline("application-failed", {
-    jobId: String(jobId),
-    error: lastErr?.message || String(lastErr),
-    attempts: MAX_RETRIES,
-  });
-  emitPipeline("dashboard-update", { reason: "application-failed", jobId: String(jobId) });
+  emitPipeline(
+    "application-failed",
+    pipelineExtras(job, {
+      error: lastErr?.message || String(lastErr),
+      attempts: MAX_RETRIES,
+    })
+  );
+  emitPipeline("dashboard-update", pipelineExtras(job, { reason: "application-failed" }));
 
   await logActivity({
     type: "apply_failed",
@@ -133,6 +149,7 @@ async function applyJobWithRetry(job, options) {
     severity: "error",
     meta: { error: lastErr?.message },
   });
+  await sendApplyFailedNotification(job, lastErr?.message || String(lastErr));
   await sendErrorAlert("Application Pipeline Failed", lastErr);
   return { ok: false, error: lastErr };
 }
