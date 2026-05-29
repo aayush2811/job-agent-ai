@@ -1,5 +1,9 @@
 const { sendWarningAlert } = require("../utils/errorNotifier");
-const { isTelegramEnabled, hasTelegramCredentials } = require("./config");
+const {
+  isTelegramEnabled,
+  hasTelegramCredentials,
+  logTelegramStartupDiagnostics,
+} = require("./config");
 const { resolveChatForJob, resolveOwnerUserIdForJob, resolveChatIdForUser } = require("./chatResolver");
 
 /** @type {import('node-telegram-bot-api') | null} */
@@ -246,14 +250,7 @@ function bindHandlers(instance) {
 }
 
 function logStartupConfig() {
-  const enabled = isTelegramEnabled();
-  const creds = hasTelegramCredentials();
-  console.log(`[Telegram] enabled=${enabled}`);
-  console.log(`[Telegram] credentials=${creds ? "present" : "missing"}`);
-  if (enabled && creds) {
-    console.log(`[Telegram] TELEGRAM_CHAT_ID=${process.env.TELEGRAM_CHAT_ID ? "set" : "MISSING"}`);
-    console.log(`[Telegram] TELEGRAM_BOT_TOKEN=${process.env.TELEGRAM_BOT_TOKEN ? "set" : "MISSING"}`);
-  }
+  logTelegramStartupDiagnostics();
 }
 
 /**

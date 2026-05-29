@@ -11,7 +11,13 @@ const {
 const { initSocketIO, closeSocketIO } = require("./sockets");
 const whatsappService = require("./modules/whatsapp/whatsapp.service");
 const { startTelegram, stopTelegram } = require("./telegram/bot");
-const { isTelegramEnabled } = require("./telegram/config");
+const {
+  isTelegramEnabled,
+  isTelegramOperational,
+  hasTelegramCredentials,
+  logTelegramStartupDiagnostics,
+  getTelegramEnvDiagnostics,
+} = require("./telegram/config");
 const { sendStartupNotification } = require("./utils/errorNotifier");
 const jobService = require("./jobs/job.service");
 
@@ -75,14 +81,16 @@ async function bootstrap() {
     scheduleMongoReconnect(onMongoReady);
   }
 
-  if (isTelegramEnabled()) {
+  logTelegramStartupDiagnostics();
+
+  if (isTelegramOperational()) {
     try {
       const instance = startTelegram();
       const { getTelegramState } = require("./telegram/bot");
-      const { hasTelegramCredentials } = require("./telegram/config");
       startup.log("telegram_start_requested", {
         credentials: hasTelegramCredentials(),
         botCreated: Boolean(instance),
+        env: getTelegramEnvDiagnostics(),
       });
       setTimeout(() => {
         const st = getTelegramState();
@@ -100,7 +108,12 @@ async function bootstrap() {
       startup.log("telegram_start_failed", { error: err?.message || String(err) });
     }
   } else {
-    startup.log("telegram_disabled");
+    startup.log("telegram_disabled", {
+      reason: !isTelegramEnabled()
+        ? "TELEGRAM_ENABLED false or unset without credentials fallback"
+        : "missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID",
+      env: getTelegramEnvDiagnostics(),
+    });
   }
 
   if (!mongoOk) {

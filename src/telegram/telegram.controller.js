@@ -36,4 +36,20 @@ async function postTest(req, res) {
   }
 }
 
-module.exports = { getStatus, postTest };
+async function getDebug(req, res) {
+  const st = getTelegramState();
+  res.json({
+    success: true,
+    data: {
+      enabled: isTelegramEnabled(),
+      hasCredentials: hasTelegramCredentials(),
+      isPolling: st.isPolling,
+      botUsername: st.botUsername,
+      chatConnected: st.chatConnected,
+      status: st.status,
+      lastError: st.lastError,
+    },
+  });
+}
+
+module.exports = { getStatus, postTest, getDebug };
