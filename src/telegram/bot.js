@@ -10,7 +10,8 @@ const { resolveChatForJob, resolveOwnerUserIdForJob, resolveChatIdForUser } = re
 let bot = null;
 let handlersBound = false;
 let isPolling = false;
-let startInProgress = false;
+let botInitInProgress = false;
+let pollingStartInProgress = false;
 let isShuttingDown = false;
 let pollingRetryTimer = null;
 let pollingBackoffAttempt = 0;
@@ -29,14 +30,33 @@ const telegramState = {
 let lastPollingLogAt = 0;
 const POLLING_LOG_THROTTLE_MS = 30_000;
 
+function botReportsPolling(instance) {
+  return Boolean(instance && typeof instance.isPolling === "function" && instance.isPolling());
+}
+
+function syncPollingRuntimeState() {
+  const runtimePolling = botReportsPolling(bot);
+  if (runtimePolling) {
+    isPolling = true;
+    if (telegramState.status !== "error" && telegramState.status !== "reconnecting") {
+      telegramState.status = "running";
+    }
+  } else if (!pollingStartInProgress && !pollingRetryTimer) {
+    isPolling = false;
+  }
+  return runtimePolling;
+}
+
 function getTelegramState() {
+  syncPollingRuntimeState();
   return {
     ...telegramState,
     enabled: isTelegramEnabled(),
-    isPolling,
+    isPolling: botReportsPolling(bot) || isPolling,
     pollingBackoffAttempt,
     hasBot: Boolean(bot),
     hasCredentials: hasTelegramCredentials(),
+    credentialsLoaded: hasTelegramCredentials(),
   };
 }
 
@@ -45,6 +65,7 @@ function getBot() {
 }
 
 function canSendOutbound() {
+  syncPollingRuntimeState();
   return isTelegramEnabled() && hasTelegramCredentials() && Boolean(bot);
 }
 
@@ -55,21 +76,23 @@ function clearPollingRetry() {
   }
 }
 
+function logPollingError(message) {
+  telegramState.lastError = message;
+  telegramState.status = "error";
+  console.error(`[Telegram] polling error ${message}`);
+}
+
 function logPollingErrorThrottled(message) {
   const now = Date.now();
   if (now - lastPollingLogAt < POLLING_LOG_THROTTLE_MS) return;
   lastPollingLogAt = now;
-  console.error("[Telegram] polling_error:", message);
+  logPollingError(message);
 }
 
 function getPollingBackoffDelay() {
   const exp = BASE_POLLING_BACKOFF_MS * Math.pow(2, pollingBackoffAttempt);
   pollingBackoffAttempt += 1;
   return Math.min(exp, MAX_POLLING_BACKOFF_MS);
-}
-
-function botReportsPolling(instance) {
-  return typeof instance.isPolling === "function" && instance.isPolling();
 }
 
 async function stopPollingSafely() {
@@ -117,29 +140,48 @@ async function verifyBotConnection(instance) {
     }
   } catch (err) {
     telegramState.chatConnected = false;
-    console.error("[Telegram] bot getMe failed:", err?.message || err);
+    telegramState.lastError = err?.message || String(err);
+    console.error("[Telegram] bot getMe failed:", telegramState.lastError);
   }
 }
 
-function startPollingOnce() {
-  if (!bot || isShuttingDown || isPolling) return Promise.resolve();
-  if (startInProgress) return Promise.resolve();
+async function startPollingOnce() {
+  if (!bot || isShuttingDown) {
+    console.log("[Telegram] startPolling skipped — no bot or shutting down");
+    return;
+  }
+
   if (botReportsPolling(bot)) {
     isPolling = true;
     telegramState.status = "running";
-    return Promise.resolve();
+    console.log("[Telegram] startPolling skipped — already polling");
+    return;
   }
 
-  startInProgress = true;
+  if (pollingStartInProgress) {
+    console.log("[Telegram] startPolling skipped — start already in progress");
+    return;
+  }
+
+  pollingStartInProgress = true;
+  const pollingConfig = { restart: false, polling: true };
+  console.log(`[Telegram] polling config ${JSON.stringify(pollingConfig)}`);
+  console.log("[Telegram] startPolling called");
+
   try {
-    bot.startPolling({ restart: false });
-    isPolling = true;
+    await bot.startPolling(pollingConfig);
+
+    isPolling = botReportsPolling(bot);
+    if (!isPolling) {
+      throw new Error("startPolling resolved but bot.isPolling() is false");
+    }
+
     pollingBackoffAttempt = 0;
     telegramState.status = "running";
     telegramState.lastError = null;
     console.log("[Telegram] polling started");
     console.log("[Telegram] polling connected — listening for approval callbacks");
-    verifyBotConnection(bot).catch(() => {});
+    await verifyBotConnection(bot);
   } catch (err) {
     isPolling = false;
     telegramState.status = "error";
@@ -147,9 +189,8 @@ function startPollingOnce() {
     console.error("[Telegram] startPolling failed:", telegramState.lastError);
     schedulePollingRestart();
   } finally {
-    startInProgress = false;
+    pollingStartInProgress = false;
   }
-  return Promise.resolve();
 }
 
 function bindHandlers(instance) {
@@ -160,8 +201,6 @@ function bindHandlers(instance) {
 
   instance.on("polling_error", (err) => {
     const msg = err?.message || String(err);
-    telegramState.lastError = msg;
-    telegramState.status = "error";
     logPollingErrorThrottled(msg);
 
     stopPollingSafely()
@@ -249,15 +288,12 @@ function bindHandlers(instance) {
   });
 }
 
-function logStartupConfig() {
-  logTelegramStartupDiagnostics();
-}
-
 /**
  * Starts the Telegram bot singleton. Never throws; failures are logged only.
  */
 function startTelegram() {
-  logStartupConfig();
+  console.log("[Telegram] startTelegram entered");
+  logTelegramStartupDiagnostics();
   telegramState.enabled = isTelegramEnabled();
 
   if (!isTelegramEnabled()) {
@@ -273,13 +309,18 @@ function startTelegram() {
   }
 
   if (bot) {
-    if (!isPolling && !isShuttingDown) {
-      startPollingOnce().catch(() => {});
+    if (!botReportsPolling(bot) && !isShuttingDown) {
+      startPollingOnce().catch((err) => {
+        console.error("[Telegram] startPollingOnce error:", err?.message || err);
+      });
     }
     return bot;
   }
 
-  if (startInProgress) return bot;
+  if (botInitInProgress) {
+    console.log("[Telegram] startTelegram skipped — bot init in progress");
+    return bot;
+  }
 
   const token = process.env.TELEGRAM_BOT_TOKEN;
   if (!token) {
@@ -288,14 +329,22 @@ function startTelegram() {
     return null;
   }
 
-  startInProgress = true;
+  botInitInProgress = true;
   try {
-    const TelegramBot = require("node-telegram-bot-api");
+    let TelegramBot;
+    try {
+      TelegramBot = require("node-telegram-bot-api");
+      console.log("[Telegram] node-telegram-bot-api loaded");
+    } catch (err) {
+      telegramState.status = "error";
+      telegramState.lastError = `node-telegram-bot-api not installed: ${err?.message || err}`;
+      console.error("[Telegram]", telegramState.lastError);
+      return null;
+    }
+
     bot = new TelegramBot(token, { polling: false });
-    console.log("[Telegram] bot client created");
+    console.log("[Telegram] bot client created (polling: false — manual startPolling)");
     bindHandlers(bot);
-    startPollingOnce().catch(() => {});
-    return bot;
   } catch (err) {
     telegramState.status = "error";
     telegramState.lastError = err?.message || String(err);
@@ -304,8 +353,14 @@ function startTelegram() {
     isPolling = false;
     return null;
   } finally {
-    startInProgress = false;
+    botInitInProgress = false;
   }
+
+  startPollingOnce().catch((err) => {
+    console.error("[Telegram] startPollingOnce error:", err?.message || err);
+  });
+
+  return bot;
 }
 
 async function stopTelegram() {
@@ -498,11 +553,17 @@ const sendMatchUpdatedNotification = async (job) => {
   }
 };
 
+/** Alias for health/debug consumers */
+function getTelegramStatus() {
+  return getTelegramState();
+}
+
 module.exports = {
   startTelegram,
   stopTelegram,
   getBot,
   getTelegramState,
+  getTelegramStatus,
   sendJobNotification,
   sendAutoApplyNotification,
   sendApplyFailedNotification,

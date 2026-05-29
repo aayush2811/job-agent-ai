@@ -43,11 +43,13 @@ async function getDebug(req, res) {
     data: {
       enabled: isTelegramEnabled(),
       hasCredentials: hasTelegramCredentials(),
+      credentialsLoaded: hasTelegramCredentials(),
       isPolling: st.isPolling,
       botUsername: st.botUsername,
       chatConnected: st.chatConnected,
-      status: st.status,
       lastError: st.lastError,
+      status: st.status,
+      hasBot: st.hasBot,
     },
   });
 }

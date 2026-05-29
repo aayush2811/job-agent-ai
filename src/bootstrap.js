@@ -100,8 +100,9 @@ async function bootstrap() {
           chatConnected: st.chatConnected,
           botUsername: st.botUsername,
           lastError: st.lastError,
+          hasBot: st.hasBot,
         });
-      }, 2500);
+      }, 5000);
       sendStartupNotification().catch(() => {});
     } catch (err) {
       console.warn("[Boot] Telegram init non-fatal:", err?.message || err);
