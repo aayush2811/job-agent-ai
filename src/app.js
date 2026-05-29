@@ -29,6 +29,7 @@ const resumeRoutes = require("./resumes/resume.routes");
 const matchingRoutes = require("./matching/matching.routes");
 
 const authRoutes = require("./auth/auth.routes");
+const { logMountedAuthRoutes } = require("./auth/logAuthRoutes");
 
 const usersRoutes = require("./users/users.routes");
 
@@ -83,6 +84,7 @@ app.get("/health", (req, res) => {
 app.use("/api/health", healthRoutes);
 
 app.use("/api/auth", authRoutes);
+logMountedAuthRoutes("/api/auth", authRoutes);
 
 
 
@@ -109,8 +111,6 @@ app.use("/api/matching", requireAuth, matchingRoutes);
 app.use("/api/telegram", requireAuth, telegramRoutes);
 
 
-
-console.log("[Auth] routes mounted");
 
 console.log("[Analytics] routes mounted");
 

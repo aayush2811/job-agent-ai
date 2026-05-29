@@ -55,6 +55,7 @@ async function me(req, res) {
 }
 
 async function demoLogin(req, res) {
+  console.log("[AUTH] demo-login route hit");
   try {
     const data = await authService.demoLogin(req.headers["user-agent"]);
     res.json({ success: true, message: "Logged in as demo user", data });

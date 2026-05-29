@@ -137,8 +137,10 @@ async function getMe(userId) {
 }
 
 async function demoLogin(userAgent = "") {
-  if (process.env.NODE_ENV === "production") {
-    throw httpError(403, "Demo mode is disabled in production");
+  const demoAllowed =
+    process.env.DEMO_LOGIN_ENABLED === "true" || process.env.NODE_ENV !== "production";
+  if (!demoAllowed) {
+    throw httpError(403, "Demo mode is disabled in production (set DEMO_LOGIN_ENABLED=true to override)");
   }
 
   const email = "demo@jobagent.ai";
