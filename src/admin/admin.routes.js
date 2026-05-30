@@ -16,5 +16,10 @@ router.post(
   requireRole("admin"),
   asyncHandler(adminController.replayNotifications)
 );
+router.get(
+  "/extraction-debug",
+  requireRole("admin"),
+  asyncHandler(adminController.extractionDebug)
+);
 
 module.exports = router;

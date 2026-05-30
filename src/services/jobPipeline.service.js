@@ -9,6 +9,7 @@ const { isDbReady } = require("../utils/dbGuard");
 const matchingService = require("../matching/matching.service");
 const { resolvePipelineUserId } = require("../users/pipelineOwner");
 const { pipelineLog } = require("../utils/pipelineLog");
+const { validateExtraction } = require("./extractionAudit.service");
 
 const MIN_SCORE = parseInt(process.env.JOB_MIN_SCORE || "70", 10);
 const AUTO_APPLY_THRESHOLD = parseInt(
@@ -32,19 +33,30 @@ async function processFromExtraction({
     return { ok: false, reason: "duplicate_message" };
   }
 
-  if (!extractedData?.role || !extractedData?.email) {
-    return { ok: false, reason: "incomplete_extraction" };
+  const validation = validateExtraction(extractedData, { messageId, rawMessage: text });
+  if (!validation.accepted) {
+    return {
+      ok: false,
+      reason: validation.rejectionReason || "incomplete_extraction",
+      missingFields: validation.missingFields,
+    };
   }
 
-  const duplicateJob = await Job.findOne({
-    company: extractedData.company || "",
-    role: extractedData.role || "",
-    email: extractedData.email || "",
-  });
+  const parsed = validation.parsedResult;
+
+  const duplicateQuery = {
+    company: parsed.company,
+    role: parsed.role,
+  };
+  if (parsed.email) {
+    duplicateQuery.email = parsed.email;
+  }
+
+  const duplicateJob = await Job.findOne(duplicateQuery);
   if (duplicateJob) {
     await logActivity({
       type: "job_skipped",
-      message: `Duplicate company/role/email: ${extractedData.role}`,
+      message: `Duplicate company/role: ${parsed.role}`,
       severity: "info",
       meta: { source },
     });
@@ -52,19 +64,19 @@ async function processFromExtraction({
   }
 
   const alreadyApplied = await Job.findOne({
-    company: extractedData.company,
-    role: extractedData.role,
+    company: parsed.company,
+    role: parsed.role,
     applied: true,
   });
   if (alreadyApplied) {
     return { ok: false, reason: "already_applied_company" };
   }
 
-  const scored = scoreJob(extractedData, text || "");
+  const scored = scoreJob(parsed, text || "");
   if (scored.score < MIN_SCORE) {
     await logActivity({
       type: "job_low_score",
-      message: `Rejected low score ${scored.score} for ${extractedData.role}`,
+      message: `Rejected low score ${scored.score} for ${parsed.role}`,
       severity: "info",
       meta: { scored },
     });
@@ -79,12 +91,12 @@ async function processFromExtraction({
   let newJob = await Job.create({
     messageId,
     text,
-    company: extractedData.company || "",
-    role: extractedData.role || "",
-    location: extractedData.location || "",
-    email: extractedData.email || "",
-    skills: extractedData.skills || [],
-    experience: extractedData.experience || "",
+    company: parsed.company,
+    role: parsed.role,
+    location: parsed.location || "",
+    email: parsed.email || "",
+    skills: parsed.skills || [],
+    experience: parsed.experience || "",
     matchScore: scored.score,
     scoreBreakdown: scored.breakdown,
     scoreRecommendation: scored.recommendation,
