@@ -6,5 +6,15 @@ const adminController = require("./admin.controller");
 const router = express.Router();
 
 router.get("/job-audit", requireRole("admin"), asyncHandler(adminController.jobAudit));
+router.get(
+  "/missing-notifications",
+  requireRole("admin"),
+  asyncHandler(adminController.missingNotifications)
+);
+router.post(
+  "/replay-notifications",
+  requireRole("admin"),
+  asyncHandler(adminController.replayNotifications)
+);
 
 module.exports = router;
