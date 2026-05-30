@@ -8,6 +8,7 @@ const { sendJobNotification } = require("../telegram/bot");
 const { isDbReady } = require("../utils/dbGuard");
 const matchingService = require("../matching/matching.service");
 const { resolvePipelineUserId } = require("../users/pipelineOwner");
+const { pipelineLog } = require("../utils/pipelineLog");
 
 const MIN_SCORE = parseInt(process.env.JOB_MIN_SCORE || "70", 10);
 const AUTO_APPLY_THRESHOLD = parseInt(
@@ -71,6 +72,9 @@ async function processFromExtraction({
   }
 
   const pipelineUserId = await resolvePipelineUserId();
+  if (!pipelineUserId) {
+    console.warn("[Pipeline] no pipeline userId resolved — job will be invisible to SaaS users");
+  }
 
   let newJob = await Job.create({
     messageId,
@@ -90,11 +94,28 @@ async function processFromExtraction({
     userId: pipelineUserId || null,
   });
 
+  pipelineLog("job_created", {
+    jobId: newJob._id,
+    userId: pipelineUserId,
+    title: newJob.role,
+    status: newJob.status,
+    matchScore: scored.score,
+    source,
+  });
+
   await logActivity({
     type: "job_created",
     message: `Job captured: ${newJob.role} (${scored.score})`,
     jobId: newJob._id,
-    meta: { recommendation: scored.recommendation, source },
+    meta: { recommendation: scored.recommendation, source, userId: pipelineUserId },
+  });
+
+  pipelineLog("job_scored", {
+    jobId: newJob._id,
+    userId: pipelineUserId,
+    title: newJob.role,
+    status: newJob.status,
+    matchScore: scored.score,
   });
 
   try {
@@ -131,6 +152,14 @@ async function processFromExtraction({
   });
 
   if (scored.score >= AUTO_APPLY_THRESHOLD) {
+    pipelineLog("telegram_notification_skipped", {
+      jobId: newJob._id,
+      userId: uid,
+      title: newJob.role,
+      status: newJob.status,
+      reason: "auto_apply_threshold",
+      matchScore: scored.score,
+    });
     await logActivity({
       type: "pipeline_auto_apply",
       message: `Score ${scored.score} ≥ ${AUTO_APPLY_THRESHOLD} — auto apply`,
@@ -141,8 +170,52 @@ async function processFromExtraction({
     return { ok: true, jobId: newJob._id, path: "auto_apply" };
   }
 
-  await sendJobNotification(newJob);
+  pipelineLog("telegram_notification_requested", {
+    jobId: newJob._id,
+    userId: uid,
+    title: newJob.role,
+    status: newJob.status,
+    matchScore: scored.score,
+  });
+
+  const notifyResult = await sendJobNotification(newJob);
+  if (notifyResult?.ok) {
+    pipelineLog("telegram_notification_sent", {
+      jobId: newJob._id,
+      userId: uid,
+      title: newJob.role,
+      status: newJob.status,
+      chatId: notifyResult.chatId,
+    });
+    await logActivity({
+      type: "telegram_notification_sent",
+      message: `Telegram approval sent: ${newJob.role}`,
+      jobId: newJob._id,
+      meta: { chatId: notifyResult.chatId },
+    });
+  } else {
+    pipelineLog("telegram_notification_failed", {
+      jobId: newJob._id,
+      userId: uid,
+      title: newJob.role,
+      status: newJob.status,
+      error: notifyResult?.error || "unknown",
+    });
+    await logActivity({
+      type: "telegram_notification_failed",
+      message: `Telegram failed: ${newJob.role} — ${notifyResult?.error || "unknown"}`,
+      jobId: newJob._id,
+      severity: "warn",
+    });
+  }
+
   approvalQueue.schedule(newJob);
+  pipelineLog("approval_created", {
+    jobId: newJob._id,
+    userId: uid,
+    title: newJob.role,
+    status: newJob.status,
+  });
 
   emitPipeline("approval-pending", {
     jobId: String(newJob._id),

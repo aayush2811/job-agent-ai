@@ -19,18 +19,21 @@ async function postTest(req, res) {
       return res.status(result.statusCode || 503).json({
         success: false,
         message: result.error || "Telegram test failed",
+        telegramResponse: result.telegramResponse || null,
         data: result,
       });
     }
     res.json({
       success: true,
       message: "Test notification sent",
+      telegramResponse: result.telegramResponse,
       data: result,
     });
   } catch (err) {
     res.status(500).json({
       success: false,
       message: err.message || "Telegram test failed",
+      telegramResponse: null,
       data: null,
     });
   }

@@ -35,6 +35,8 @@ const usersRoutes = require("./users/users.routes");
 
 const telegramRoutes = require("./telegram/telegram.routes");
 
+const adminRoutes = require("./admin/admin.routes");
+
 const { ensureUploadDir } = require("./resumes/multer.config");
 
 const { uploadsAccessGuard } = require("./security/uploadGuard");
@@ -110,6 +112,8 @@ app.use("/api/matching", requireAuth, matchingRoutes);
 
 app.use("/api/telegram", requireAuth, telegramRoutes);
 
+app.use("/api/admin", requireAuth, adminRoutes);
+
 
 
 console.log("[Analytics] routes mounted");
@@ -119,6 +123,7 @@ console.log("[Resumes] routes mounted");
 console.log("[Matching] routes mounted");
 
 console.log("[Telegram] routes mounted");
+console.log("[Admin] routes mounted");
 
 
 

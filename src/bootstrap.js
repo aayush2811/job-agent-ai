@@ -76,6 +76,19 @@ async function bootstrap() {
   const mongoOk = await connectDB();
   if (mongoOk) {
     await onMongoReady();
+    try {
+      const { resolvePipelineUserId } = require("./users/pipelineOwner");
+      const ownerId = await resolvePipelineUserId();
+      startup.log("pipeline_owner", {
+        userId: ownerId || null,
+        envDefault: process.env.DEFAULT_PIPELINE_USER_ID || null,
+      });
+      console.log(
+        `[Pipeline] pipeline owner userId=${ownerId || "NONE"} (set DEFAULT_PIPELINE_USER_ID if dashboard shows no jobs)`
+      );
+    } catch (err) {
+      console.warn("[Pipeline] pipeline owner resolve failed:", err?.message);
+    }
   } else {
     startup.log("mongo_failed_degraded");
     scheduleMongoReconnect(onMongoReady);

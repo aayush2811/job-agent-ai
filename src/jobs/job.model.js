@@ -94,6 +94,17 @@ const jobSchema = new mongoose.Schema(
       default: false,
     },
 
+    /** Set when Telegram approval notification succeeds */
+    telegramNotifiedAt: {
+      type: Date,
+      default: null,
+    },
+
+    telegramNotifyError: {
+      type: String,
+      default: null,
+    },
+
     status: {
       type: String,
       enum: JOB_STATUS,

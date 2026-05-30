@@ -1,4 +1,5 @@
 const { sendWarningAlert } = require("../utils/errorNotifier");
+const Job = require("../jobs/job.model");
 const {
   isTelegramEnabled,
   hasTelegramCredentials,
@@ -383,15 +384,37 @@ async function stopTelegram() {
 }
 
 async function sendMessageToChat(chatId, text, extra = {}) {
+  const payloadSummary = {
+    chatId: chatId ? String(chatId) : null,
+    textLength: text?.length ?? 0,
+    hasReplyMarkup: Boolean(extra?.reply_markup),
+  };
+  console.log("[Telegram] sendMessage requested", JSON.stringify(payloadSummary));
+  console.log("[Telegram] sendMessage payload", JSON.stringify({ chatId: payloadSummary.chatId, preview: String(text).slice(0, 120) }));
+
   if (!canSendOutbound() || !chatId) {
-    return { ok: false, error: "Telegram not ready or chat id missing" };
+    const error = !chatId ? "chat id missing" : "Telegram not ready";
+    console.error("[Telegram] sendMessage failure", error);
+    return { ok: false, error };
   }
   try {
-    await bot.sendMessage(chatId, text, extra);
-    return { ok: true, chatId };
+    const telegramResponse = await bot.sendMessage(chatId, text, extra);
+    console.log(
+      "[Telegram] sendMessage success",
+      JSON.stringify({
+        chatId: String(chatId),
+        messageId: telegramResponse?.message_id,
+        date: telegramResponse?.date,
+      })
+    );
+    return { ok: true, chatId, telegramResponse };
   } catch (error) {
-    console.error("[Telegram] sendMessage error:", error?.message || error);
-    return { ok: false, error: error?.message || String(error) };
+    const msg = error?.message || String(error);
+    console.error("[Telegram] sendMessage failure", msg);
+    if (error?.response?.body) {
+      console.error("[Telegram] sendMessage api body", JSON.stringify(error.response.body));
+    }
+    return { ok: false, error: msg, telegramResponse: error?.response?.body || null };
   }
 }
 
@@ -409,34 +432,58 @@ async function sendTestMessage(userId) {
     return { ok: false, statusCode: 503, error: "Bot not initialized" };
   }
 
-  const chatId = resolveChatIdForUser(userId);
+  const chatId = resolveChatIdForUser(userId) || process.env.TELEGRAM_CHAT_ID;
   if (!chatId) {
     return {
       ok: false,
       statusCode: 400,
-      error: "No chat id for user — set TELEGRAM_CHAT_ID or TELEGRAM_CHAT_MAP",
+      error: "No chat id — set TELEGRAM_CHAT_ID or TELEGRAM_CHAT_MAP",
     };
   }
 
-  const text = "✅ Telegram integration working";
+  const text = `🚀 Job Agent Test Notification\nServer Time: ${new Date().toISOString()}`;
   const result = await sendMessageToChat(chatId, text);
   if (!result.ok) {
-    return { ok: false, statusCode: 502, error: result.error, chatId };
+    return {
+      ok: false,
+      statusCode: 502,
+      error: result.error,
+      chatId,
+      telegramResponse: result.telegramResponse || null,
+    };
   }
-  return { ok: true, chatId, userId: userId ? String(userId) : null };
+  return {
+    ok: true,
+    chatId,
+    userId: userId ? String(userId) : null,
+    telegramResponse: result.telegramResponse,
+  };
 }
 
 const sendJobNotification = async (job) => {
+  const jobId = job?._id;
+  const userId = job?.userId ? String(job.userId) : undefined;
+
   if (!canSendOutbound()) {
-    console.warn("[Telegram] skip job notification — outbound not ready");
-    return;
+    const error = "outbound not ready (bot disabled or not polling)";
+    console.warn(`[Telegram] skip job notification — ${error}`);
+    if (jobId) {
+      await Job.findByIdAndUpdate(jobId, {
+        telegramNotifyError: error,
+      }).catch(() => {});
+    }
+    return { ok: false, error };
   }
 
   try {
-    const { chatId, userId } = await resolveChatForJob(job);
+    const { chatId, userId: resolvedUserId } = await resolveChatForJob(job);
     if (!chatId) {
-      console.warn("[Telegram] skip job notification — no chat id for user", userId);
-      return;
+      const error = `no chat id for user ${resolvedUserId || userId || "unknown"}`;
+      console.warn("[Telegram] skip job notification —", error);
+      if (jobId) {
+        await Job.findByIdAndUpdate(jobId, { telegramNotifyError: error }).catch(() => {});
+      }
+      return { ok: false, error };
     }
 
     const aiScore = job.resumeMatchScore ?? 0;
@@ -470,7 +517,7 @@ const sendJobNotification = async (job) => {
 📧 Email: ${job.email}
 `;
 
-    await bot.sendMessage(chatId, message, {
+    const result = await sendMessageToChat(chatId, message, {
       reply_markup: {
         inline_keyboard: [
           [
@@ -481,18 +528,41 @@ const sendJobNotification = async (job) => {
       },
     });
 
+    if (!result.ok) {
+      if (jobId) {
+        await Job.findByIdAndUpdate(jobId, {
+          telegramNotifyError: result.error || "send failed",
+        }).catch(() => {});
+      }
+      sendWarningAlert("Telegram Job Notification Failed", new Error(result.error)).catch(() => {});
+      return result;
+    }
+
+    if (jobId) {
+      await Job.findByIdAndUpdate(jobId, {
+        telegramNotifiedAt: new Date(),
+        telegramNotifyError: null,
+      }).catch(() => {});
+    }
+
     const { emitPipeline } = require("../services/pipelineBus");
     emitPipeline("telegram-approval-requested", {
       jobId: String(job._id),
-      userId: userId || (job.userId ? String(job.userId) : undefined),
+      userId: resolvedUserId || userId,
       role: job.role,
       company: job.company,
     });
 
     console.log(`[Telegram] approval notification sent job=${job._id} chat=${chatId}`);
+    return { ok: true, chatId, telegramResponse: result.telegramResponse };
   } catch (error) {
-    console.error("[Telegram] job notification error:", error?.message || error);
+    const msg = error?.message || String(error);
+    console.error("[Telegram] job notification error:", msg);
+    if (jobId) {
+      await Job.findByIdAndUpdate(jobId, { telegramNotifyError: msg }).catch(() => {});
+    }
     sendWarningAlert("Telegram Job Notification Failed", error).catch(() => {});
+    return { ok: false, error: msg };
   }
 };
 

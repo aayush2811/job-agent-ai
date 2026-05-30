@@ -6,6 +6,8 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "nodemon",
+    "migrate:jobs": "node scripts/migrate-job-ownership.js",
+    "migrate:jobs:dry": "node scripts/migrate-job-ownership.js --dry-run",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
